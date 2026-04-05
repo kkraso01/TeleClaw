@@ -53,3 +53,13 @@ Each successful switch is also recorded in TeleClaw memory as a durable `project
 - Add per-user authorization for project access (current routing is chat-scoped).
 - Add stricter fuzzy-matching controls per deployment policy.
 - Add per-project memory retention controls once compaction policy is configurable.
+
+## Runtime enforcement
+
+Routing now enforces runtime lifecycle before worker execution.
+
+- one project maps to one backend-controlled runtime binding
+- router ensures and validates runtime before adapter calls
+- runtime failures return structured runtime outcomes (`runtime_missing`, `runtime_invalid`, `runtime_error`)
+
+See [OnCallDev Runtime Model](/oncalldev-runtime-model).

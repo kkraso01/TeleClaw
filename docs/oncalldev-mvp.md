@@ -54,3 +54,9 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - Add explicit project authorization policy per Telegram user.
 - Add health probes for OpenHands project containers.
 - Expand channel-visible progress updates for long-running worker tasks.
+
+## Runtime lifecycle milestone
+
+The TeleClaw runtime milestone adds backend-controlled runtime/container lifecycle with one project per runtime binding, runtime policy checks, and runtime-aware router enforcement before OpenHands execution.
+
+See [OnCallDev Runtime Model](/oncalldev-runtime-model) and [OnCallDev Container Lifecycle](/oncalldev-container-lifecycle).

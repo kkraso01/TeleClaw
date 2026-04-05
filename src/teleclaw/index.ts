@@ -1,3 +1,4 @@
+export { createOnCallRuntimeController } from "./runtime/index.js";
 export { createOnCallRouter, type OnCallRouter } from "./router/index.js";
 export type {
   OnCallAction,

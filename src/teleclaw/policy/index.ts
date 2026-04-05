@@ -1,9 +1,11 @@
 import path from "node:path";
-import type { OnCallPolicyError, OnCallProject, OnCallSessionState } from "../types.js";
+import type { OnCallRuntimeState } from "../runtime/index.js";
+import type { OnCallPolicyError, OnCallProject } from "../types.js";
 
 type OnCallPolicyConfig = {
   projectsRoot: string;
   allowedProjectMounts: string[];
+  allowedRuntimeFamilies: string[];
 };
 
 function parseListFromEnv(raw: string | undefined): string[] {
@@ -24,6 +26,7 @@ function resolvePolicyConfig(config: Partial<OnCallPolicyConfig> = {}): OnCallPo
     allowedProjectMounts: parseListFromEnv(process.env.ALLOWED_PROJECT_MOUNTS).map((entry) =>
       path.resolve(entry),
     ),
+    allowedRuntimeFamilies: parseListFromEnv(process.env.TELECLAW_ALLOWED_RUNTIME_FAMILIES),
     ...config,
   };
 }
@@ -84,24 +87,76 @@ export function canExecuteProject(project: OnCallProject): OnCallPolicyError | n
 }
 
 export function canBindProject(
-  _session: OnCallSessionState,
+  _session: { activeProjectId: string | null },
   project: OnCallProject,
 ): OnCallPolicyError | null {
   return canExecuteProject(project);
+}
+
+export function canStartRuntime(
+  project: OnCallProject,
+  config: Partial<OnCallPolicyConfig> = {},
+): OnCallPolicyError | null {
+  const workspacePolicy = validateWorkspacePath(project, config);
+  if (workspacePolicy) {
+    return workspacePolicy;
+  }
+
+  if (project.status === "archived") {
+    return makeError("project_archived", "Archived projects cannot start runtimes.", {
+      projectId: project.id,
+    });
+  }
+
+  const resolved = resolvePolicyConfig(config);
+  if (
+    resolved.allowedRuntimeFamilies.length > 0 &&
+    project.runtimeFamily &&
+    !resolved.allowedRuntimeFamilies.includes(project.runtimeFamily)
+  ) {
+    return makeError(
+      "runtime_family_disallowed",
+      `Runtime family is not allowed: ${project.runtimeFamily}`,
+      {
+        projectId: project.id,
+        allowedRuntimeFamilies: resolved.allowedRuntimeFamilies,
+      },
+    );
+  }
+
+  return null;
+}
+
+export function canAttachRuntime(
+  project: OnCallProject,
+  runtimeState: OnCallRuntimeState,
+  config: Partial<OnCallPolicyConfig> = {},
+): OnCallPolicyError | null {
+  const startPolicy = canStartRuntime(project, config);
+  if (startPolicy) {
+    return startPolicy;
+  }
+
+  if (runtimeState.status !== "running" || !runtimeState.containerId) {
+    return makeError("runtime_attach_failed", "Runtime is not currently attachable.", {
+      projectId: project.id,
+      status: runtimeState.status,
+      containerId: runtimeState.containerId,
+    });
+  }
+
+  return null;
 }
 
 export function requireExecutionContext(project: OnCallProject | null): OnCallPolicyError | null {
   if (!project) {
     return makeError("project_required", "Execution requires a resolved project context.");
   }
-  if (!project.containerId) {
-    return makeError(
-      "container_binding_required",
-      "Execution requires a bound container. Add containerId to the project registry.",
-      { projectId: project.id },
-    );
-  }
-  return null;
+  return canStartRuntime(project);
+}
+
+export function explainRuntimePolicyFailure(policy: OnCallPolicyError): string {
+  return `Runtime policy blocked this request: ${policy.message} [${policy.code}]`;
 }
 
 export function explainPolicyFailure(policy: OnCallPolicyError): string {

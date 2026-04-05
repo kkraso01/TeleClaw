@@ -1,18 +1,24 @@
 import { resolveOnCallIntent } from "../intent/index.js";
 import { createOnCallMemoryStore, type OnCallMemoryStore } from "../memory/index.js";
 import {
+  canAttachRuntime,
   canBindProject,
+  canStartRuntime,
   explainPolicyFailure,
+  explainRuntimePolicyFailure,
   requireExecutionContext,
   validateWorkspacePath,
 } from "../policy/index.js";
 import { createOnCallProjectRegistry, type OnCallProjectRegistry } from "../projects/index.js";
+import { createOnCallRuntimeController, type OnCallRuntimeController } from "../runtime/index.js";
 import { createOnCallSessionManager, type OnCallSessionManager } from "../sessions/index.js";
 import type {
   OnCallAction,
   OnCallInput,
   OnCallMemoryEvent,
   OnCallRouteOutcome,
+  OnCallRuntimeEventType,
+  OnCallRuntimeStatus,
   OnCallSessionState,
   OnCallVoiceSynthesisResult,
   OnCallWorkerProgressEvent,
@@ -45,6 +51,7 @@ type OnCallRouterDeps = {
   memory?: OnCallMemoryStore;
   worker?: OpenHandsAdapter;
   voice?: OnCallVoiceService;
+  runtime?: OnCallRuntimeController;
 };
 
 const defaultAdapter = createOpenHandsAdapter({
@@ -55,6 +62,8 @@ const defaultAdapter = createOpenHandsAdapter({
   model: process.env.LLM_MODEL,
 });
 
+type RuntimeIntent = "start" | "stop" | "restart" | "status" | null;
+
 function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" {
   if (requested === "voice") {
     return "voice";
@@ -62,11 +71,28 @@ function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" 
   return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
 }
 
-function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
+function createEvent<TEvent extends OnCallMemoryEvent>(event: Omit<TEvent, "id">): TEvent {
   return {
     ...event,
     id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
-  };
+  } as TEvent;
+}
+
+function resolveRuntimeIntent(instruction: string): RuntimeIntent {
+  const normalized = instruction.trim().toLowerCase();
+  if (/^(restart|reboot)\b/.test(normalized)) {
+    return "restart";
+  }
+  if (/^(stop|shutdown|halt)\b/.test(normalized)) {
+    return "stop";
+  }
+  if (/^(start|boot)\b/.test(normalized)) {
+    return "start";
+  }
+  if (/(is .* running\??$|what container|container is|runtime status)/.test(normalized)) {
+    return "status";
+  }
+  return null;
 }
 
 async function maybeSynthesizeVoiceReply(params: {
@@ -142,6 +168,44 @@ function createMemoryBackedStatusText(params: {
     : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}`;
 }
 
+function createRuntimeStatusText(params: {
+  projectName: string;
+  status: OnCallRuntimeStatus;
+  containerId: string | null;
+  containerName: string | null;
+  runtimeFamily: string | null;
+}): string {
+  const containerLine = params.containerId
+    ? `Container: ${params.containerName ?? "(unnamed)"} [${params.containerId}]`
+    : "Container: unbound";
+  return `${params.projectName} runtime is ${params.status}. ${containerLine}. Runtime family: ${params.runtimeFamily ?? "unknown"}.`;
+}
+
+async function persistRuntimeEvent(params: {
+  memory: OnCallMemoryStore;
+  sessionId: string;
+  projectId: string;
+  eventType: OnCallRuntimeEventType;
+  status: OnCallRuntimeStatus;
+  message: string;
+  containerId?: string | null;
+  containerName?: string | null;
+}): Promise<void> {
+  await params.memory.appendEvent(
+    createEvent({
+      atMs: Date.now(),
+      sessionId: params.sessionId,
+      projectId: params.projectId,
+      type: "runtime_event",
+      eventType: params.eventType,
+      status: params.status,
+      message: params.message,
+      containerId: params.containerId,
+      containerName: params.containerName,
+    }),
+  );
+}
+
 async function persistProgress(params: {
   memory: OnCallMemoryStore;
   sessionId: string;
@@ -178,9 +242,11 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
   const memory = deps.memory ?? createOnCallMemoryStore();
   const worker = deps.worker ?? defaultAdapter;
   const voice = deps.voice ?? createOnCallVoiceService();
+  const runtime = deps.runtime ?? createOnCallRuntimeController({ projects });
 
   async function processNormalized(input: OnCallInput): Promise<OnCallRouterResponse> {
     const intent = resolveOnCallIntent(input);
+    const runtimeIntent = resolveRuntimeIntent(intent.instruction);
     const replyMode = resolveDefaultReplyMode(intent.replyMode);
     const chatId = input.chatId ?? input.sessionKey ?? input.userId;
     const session = await sessions.getOrCreateSession(chatId, input.userId);
@@ -369,7 +435,192 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     }
 
     await projects.rememberActiveProject(chatId, project.id);
-    await sessions.bindWorker(boundSession.sessionId, { containerId: project.containerId });
+
+    const runtimeStartPolicy = canStartRuntime(project);
+    if (runtimeStartPolicy) {
+      const outcome: OnCallRouteOutcome = {
+        type: "blocked_by_policy",
+        replyMode,
+        text: explainRuntimePolicyFailure(runtimeStartPolicy),
+        projectId: project.id,
+        policy: runtimeStartPolicy,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: project.id,
+          type: "policy_block",
+          code: runtimeStartPolicy.code,
+          message: runtimeStartPolicy.message,
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    await persistRuntimeEvent({
+      memory,
+      sessionId: boundSession.sessionId,
+      projectId: project.id,
+      eventType: "runtime.ensure_requested",
+      status: project.runtimeStatus,
+      message: "Runtime ensure requested before execution.",
+      containerId: project.containerId,
+      containerName: project.containerName,
+    });
+
+    let ensuredRuntime;
+    try {
+      ensuredRuntime = await runtime.ensureProjectRuntime(project);
+    } catch (error) {
+      const outcome: OnCallRouteOutcome = {
+        type: "runtime_error",
+        replyMode,
+        text: `Runtime controller failed: ${error instanceof Error ? error.message : "unknown runtime failure"}`,
+        projectId: project.id,
+        reason: "ensure_failed",
+      };
+      await persistRuntimeEvent({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        eventType: "runtime.error",
+        status: "error",
+        message: outcome.text,
+      });
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    await persistRuntimeEvent({
+      memory,
+      sessionId: boundSession.sessionId,
+      projectId: project.id,
+      eventType:
+        ensuredRuntime.outcome === "runtime_started" ? "runtime.started" : "runtime.reused",
+      status: ensuredRuntime.status.status,
+      message:
+        ensuredRuntime.outcome === "runtime_started"
+          ? "Runtime started for project execution."
+          : "Reused existing runtime binding.",
+      containerId: ensuredRuntime.status.containerId,
+      containerName: ensuredRuntime.status.containerName,
+    });
+
+    const attachPolicy = canAttachRuntime(project, ensuredRuntime.status);
+    if (attachPolicy) {
+      const outcome: OnCallRouteOutcome = {
+        type: "runtime_invalid",
+        replyMode,
+        text: explainRuntimePolicyFailure(attachPolicy),
+        projectId: project.id,
+        status: ensuredRuntime.status.status,
+        reason: "attach_policy_failed",
+      };
+      await persistRuntimeEvent({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        eventType: "runtime.validation_failed",
+        status: ensuredRuntime.status.status,
+        message: outcome.text,
+        containerId: ensuredRuntime.status.containerId,
+        containerName: ensuredRuntime.status.containerName,
+      });
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    const validation = await runtime.validateProjectRuntime(project);
+    if (!validation.ok) {
+      const outcome: OnCallRouteOutcome = {
+        type: "runtime_missing",
+        replyMode,
+        text: `Runtime unavailable: ${validation.reason}`,
+        projectId: project.id,
+        status: validation.status.status,
+        reason: validation.reason,
+      };
+      await persistRuntimeEvent({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        eventType: "runtime.validation_failed",
+        status: validation.status.status,
+        message: outcome.text,
+        containerId: validation.status.containerId,
+        containerName: validation.status.containerName,
+      });
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    await sessions.bindWorker(boundSession.sessionId, {
+      workerType: "openhands",
+      containerId: validation.status.containerId,
+      containerName: validation.status.containerName,
+    });
+
+    if (runtimeIntent) {
+      let runtimeStatus = validation.status;
+      if (runtimeIntent === "restart") {
+        runtimeStatus = await runtime.restartProjectRuntime(project);
+        await persistRuntimeEvent({
+          memory,
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          eventType: "runtime.restarted",
+          status: runtimeStatus.status,
+          message: "Runtime restarted.",
+          containerId: runtimeStatus.containerId,
+          containerName: runtimeStatus.containerName,
+        });
+      } else if (runtimeIntent === "stop") {
+        runtimeStatus = await runtime.stopProjectRuntime(project);
+        await persistRuntimeEvent({
+          memory,
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          eventType: "runtime.stopped",
+          status: runtimeStatus.status,
+          message: "Runtime stopped.",
+          containerId: runtimeStatus.containerId,
+          containerName: runtimeStatus.containerName,
+        });
+      } else if (runtimeIntent === "start") {
+        runtimeStatus = await runtime.startProjectRuntime(project);
+        await persistRuntimeEvent({
+          memory,
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          eventType: "runtime.started",
+          status: runtimeStatus.status,
+          message: "Runtime started.",
+          containerId: runtimeStatus.containerId,
+          containerName: runtimeStatus.containerName,
+        });
+      }
+
+      const runtimeText = createRuntimeStatusText({
+        projectName: project.name,
+        status: runtimeStatus.status,
+        containerId: runtimeStatus.containerId,
+        containerName: runtimeStatus.containerName,
+        runtimeFamily: runtimeStatus.runtimeFamily,
+      });
+      const outcome: OnCallRouteOutcome = {
+        type: "success",
+        replyMode,
+        projectId: project.id,
+        projectName: project.name,
+        sessionId: boundSession.sessionId,
+        text: runtimeText,
+        execution: {
+          action: intent.action,
+          status: "ok",
+          source: "runtime",
+        },
+        runtimeOutcome: ensuredRuntime.outcome,
+      };
+      return { text: runtimeText, replyMode, outcome };
+    }
 
     await memory.mergeDurableFacts(
       boundSession.sessionId,
@@ -410,6 +661,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           status: "ok",
           source: "memory",
         },
+        runtimeOutcome: ensuredRuntime.outcome,
         summary: memorySummary,
         voiceMediaUrl: voiceReply?.mediaUrl,
       };
@@ -446,10 +698,13 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     );
 
     const workerContext: OnCallWorkerContext = {
+      projectId: project.id,
       sessionId: boundSession.sessionId,
       workerSessionId: boundSession.workerBinding.workerSessionId,
       workspacePath: project.workspacePath,
-      containerId: project.containerId,
+      containerId: validation.status.containerId,
+      containerName: validation.status.containerName,
+      runtimeFamily: validation.status.runtimeFamily,
       summary: memorySummary || boundSession.summary,
       structuredState: memoryState,
       onProgress: async (event) => {
@@ -559,6 +814,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         status: result.status,
         source: "worker",
       },
+      runtimeOutcome: ensuredRuntime.outcome,
       summary: result.summary,
       voiceMediaUrl: voiceReply?.mediaUrl,
     };

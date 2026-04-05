@@ -70,6 +70,7 @@ function createDefaultSession(chatId: string, userId?: string | null): OnCallSes
       workerType: "openhands",
       workerSessionId: null,
       containerId: null,
+      containerName: null,
     },
     currentPhase: "idle",
     summary: "",

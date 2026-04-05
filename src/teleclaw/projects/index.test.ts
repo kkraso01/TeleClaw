@@ -48,4 +48,36 @@ describe("createOnCallProjectRegistry", () => {
     };
     expect(saved.projects[0]?.id).toBe("billing-api");
   });
+
+  it("updates runtime metadata durably", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-projects-"));
+    const registry = createOnCallProjectRegistry({
+      storePath: path.join(tmpDir, "projects.json"),
+      projectsRoot: tmpDir,
+      additionalAllowedRoots: [],
+    });
+
+    await registry.createProject({
+      id: "frontend",
+      name: "Frontend",
+      aliases: ["frontend"],
+      language: "ts",
+      workspacePath: path.join(tmpDir, "frontend"),
+      containerId: null,
+      runtimeFamily: "node",
+      defaultReplyMode: "text",
+      status: "active",
+    });
+
+    const updated = await registry.updateProjectRuntimeMetadata("frontend", {
+      runtimeStatus: "running",
+      containerId: "ctr-frontend",
+      containerName: "teleclaw-frontend",
+      lastRuntimeStartAt: new Date().toISOString(),
+      lastRuntimeCheckAt: new Date().toISOString(),
+    });
+
+    expect(updated?.runtimeStatus).toBe("running");
+    expect(updated?.containerId).toBe("ctr-frontend");
+  });
 });

@@ -37,4 +37,15 @@ describe("resolveOnCallIntent", () => {
 
     expect(intent.action).toBe("summarize");
   });
+
+  it("extracts project from restart phrasing", () => {
+    const intent = resolveOnCallIntent({
+      channel: "telegram",
+      userId: "u1",
+      body: "restart the bot-project",
+      timestampMs: Date.now(),
+    });
+
+    expect(intent.projectRef).toBe("bot-project");
+  });
 });

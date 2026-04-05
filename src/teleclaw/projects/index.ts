@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { OnCallProject } from "../types.js";
+import type { OnCallProject, OnCallRuntimeStatus } from "../types.js";
 
 const DEFAULT_PROJECTS_FILENAME = "projects.json";
 
@@ -16,9 +16,31 @@ export type OnCallProjectResolution =
 
 export type OnCallProjectCreateInput = Omit<
   OnCallProject,
-  "createdAt" | "updatedAt" | "aliases"
+  | "createdAt"
+  | "updatedAt"
+  | "aliases"
+  | "runtimeStatus"
+  | "containerName"
+  | "lastRuntimeCheckAt"
+  | "lastRuntimeStartAt"
+  | "runtimeError"
 > & {
   aliases?: string[];
+  runtimeStatus?: OnCallRuntimeStatus;
+  containerName?: string | null;
+  lastRuntimeCheckAt?: string | null;
+  lastRuntimeStartAt?: string | null;
+  runtimeError?: string | null;
+};
+
+export type OnCallProjectRuntimeMetadataPatch = {
+  runtimeStatus?: OnCallRuntimeStatus;
+  containerId?: string | null;
+  containerName?: string | null;
+  runtimeFamily?: string | null;
+  lastRuntimeStartAt?: string | null;
+  lastRuntimeCheckAt?: string | null;
+  runtimeError?: string | null;
 };
 
 export type OnCallProjectRegistry = {
@@ -30,6 +52,10 @@ export type OnCallProjectRegistry = {
     chatId: string;
   }) => Promise<OnCallProjectResolution>;
   rememberActiveProject: (chatId: string, projectId: string) => Promise<void>;
+  updateProjectRuntimeMetadata: (
+    projectId: string,
+    patch: OnCallProjectRuntimeMetadataPatch,
+  ) => Promise<OnCallProject | null>;
 };
 
 type OnCallProjectRegistryConfig = {
@@ -134,6 +160,13 @@ function normalizeProject(project: OnCallProject): OnCallProject {
     ...project,
     aliases: dedupe((project.aliases ?? []).map(normalizeRef)),
     workspacePath: path.resolve(project.workspacePath),
+    containerId: project.containerId ?? null,
+    containerName: project.containerName ?? null,
+    runtimeStatus: project.runtimeStatus ?? (project.containerId ? "running" : "unbound"),
+    runtimeFamily: project.runtimeFamily ?? null,
+    runtimeError: project.runtimeError ?? null,
+    lastRuntimeStartAt: project.lastRuntimeStartAt ?? null,
+    lastRuntimeCheckAt: project.lastRuntimeCheckAt ?? null,
     updatedAt: project.updatedAt ?? nowIso(),
     createdAt: project.createdAt ?? nowIso(),
   };
@@ -172,6 +205,11 @@ export function createOnCallProjectRegistry(
         name: input.name.trim(),
         aliases: dedupe([...(input.aliases ?? []), input.name, id].map(normalizeRef)),
         workspacePath,
+        containerName: input.containerName ?? null,
+        runtimeStatus: input.runtimeStatus ?? (input.containerId ? "running" : "unbound"),
+        lastRuntimeStartAt: input.lastRuntimeStartAt ?? null,
+        lastRuntimeCheckAt: input.lastRuntimeCheckAt ?? null,
+        runtimeError: input.runtimeError ?? null,
         createdAt: now,
         updatedAt: now,
       };
@@ -253,6 +291,25 @@ export function createOnCallProjectRegistry(
       const store = await readStore(resolvedConfig);
       store.lastActiveByChatId[chatId] = projectId;
       await writeStore(resolvedConfig, store);
+    },
+
+    async updateProjectRuntimeMetadata(projectId, patch) {
+      const store = await readStore(resolvedConfig);
+      const index = store.projects.findIndex(
+        (project) => normalizeRef(project.id) === normalizeRef(projectId),
+      );
+      if (index < 0) {
+        return null;
+      }
+      const current = normalizeProject(store.projects[index]);
+      const next: OnCallProject = {
+        ...current,
+        ...patch,
+        updatedAt: nowIso(),
+      };
+      store.projects[index] = next;
+      await writeStore(resolvedConfig, store);
+      return next;
     },
   };
 }
