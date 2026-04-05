@@ -59,3 +59,7 @@ This keeps TeleClaw stateful even when the process restarts.
 - `containerName`
 
 Session `activeProjectId` remains the canonical project pointer for runtime attach/resume behavior.
+
+## Execution lifecycle state
+
+Session structured state now tracks install/test/build status and latest blocker/summary hints from execution progress.

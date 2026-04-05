@@ -60,3 +60,9 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 The TeleClaw runtime milestone adds backend-controlled runtime/container lifecycle with one project per runtime binding, runtime policy checks, and runtime-aware router enforcement before OpenHands execution.
 
 See [OnCallDev Runtime Model](/oncalldev-runtime-model), [OnCallDev Container Lifecycle](/oncalldev-container-lifecycle), [OnCallDev Docker runtime provider](/oncalldev-docker-provider), and [OnCallDev workspace bootstrap](/oncalldev-workspace-bootstrap).
+
+## Milestone update: bootstrap + repo lifecycle
+
+- Natural-language project creation/bootstrap is now supported.
+- TeleClaw stores durable repo status and branch metadata per project.
+- TeleClaw stores per-project execution profiles used by worker execution context.

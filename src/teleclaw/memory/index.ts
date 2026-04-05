@@ -71,6 +71,9 @@ const EMPTY_STRUCTURED_STATE: OnCallStructuredState = {
   testsPassing: [],
   testsFailing: [],
   blockers: [],
+  installStatus: "unknown",
+  lastTestRunStatus: "unknown",
+  lastBuildStatus: "unknown",
 };
 
 function nowIso() {

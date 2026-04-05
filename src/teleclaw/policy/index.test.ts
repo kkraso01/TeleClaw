@@ -1,6 +1,12 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { canStartRuntime, validateRuntimeBootstrap, validateWorkspacePath } from "./index.js";
+import {
+  canStartRuntime,
+  validateProjectCreationInput,
+  validateRepoUrl,
+  validateRuntimeBootstrap,
+  validateWorkspacePath,
+} from "./index.js";
 
 function project(overrides: Record<string, unknown> = {}) {
   return {
@@ -22,6 +28,22 @@ function project(overrides: Record<string, unknown> = {}) {
     runtimeError: null,
     workspaceBootstrappedAt: null,
     workspaceBootstrapError: null,
+    bootstrapStatus: "uninitialized",
+    bootstrapError: null,
+    repoUrl: null,
+    repoStatus: "missing",
+    branch: null,
+    lastRepoSyncAt: null,
+    repoError: null,
+    executionProfile: {
+      installCommand: "npm install",
+      testCommand: "npm test",
+      lintCommand: "npm run lint",
+      buildCommand: "npm run build",
+      runCommand: "npm run dev",
+      packageManager: "npm",
+      preferredShell: "bash",
+    },
     ...overrides,
   } as never;
 }
@@ -48,5 +70,18 @@ describe("teleclaw runtime policy", () => {
       allowedProjectMounts: ["/workspace/shared"],
     });
     expect(result?.code).toBe("mount_disallowed");
+  });
+
+  it("rejects unsafe workspace names", () => {
+    const result = validateProjectCreationInput({
+      name: "Billing",
+      workspacePath: "/workspace/projects/../../etc/passwd",
+    });
+    expect(result?.code).toBe("workspace_name_invalid");
+  });
+
+  it("rejects invalid repo URL", () => {
+    const result = validateRepoUrl("file:///tmp/local");
+    expect(result?.code).toBe("repo_url_invalid");
   });
 });

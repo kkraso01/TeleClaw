@@ -1,6 +1,12 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { OnCallProject, OnCallRuntimeStatus } from "../types.js";
+import { createRepoModule } from "../repo/index.js";
+import type {
+  OnCallExecutionProfile,
+  OnCallProject,
+  OnCallProjectBootstrapState,
+  OnCallRuntimeStatus,
+} from "../types.js";
 
 const DEFAULT_PROJECTS_FILENAME = "projects.json";
 
@@ -26,6 +32,14 @@ export type OnCallProjectCreateInput = Omit<
   | "runtimeError"
   | "workspaceBootstrappedAt"
   | "workspaceBootstrapError"
+  | "bootstrapStatus"
+  | "bootstrapError"
+  | "repoUrl"
+  | "repoStatus"
+  | "branch"
+  | "lastRepoSyncAt"
+  | "repoError"
+  | "executionProfile"
 > & {
   aliases?: string[];
   runtimeStatus?: OnCallRuntimeStatus;
@@ -47,6 +61,22 @@ export type OnCallProjectRuntimeMetadataPatch = {
   runtimeError?: string | null;
   workspaceBootstrappedAt?: string | null;
   workspaceBootstrapError?: string | null;
+  bootstrapStatus?: OnCallProject["bootstrapStatus"];
+  bootstrapError?: string | null;
+  repoUrl?: string | null;
+  repoStatus?: OnCallProject["repoStatus"];
+  branch?: string | null;
+  lastRepoSyncAt?: string | null;
+  repoError?: string | null;
+  executionProfile?: OnCallExecutionProfile;
+};
+
+export type OnCallProjectBootstrapInput = {
+  createWorkspace?: boolean;
+  detectRuntimeFamily?: boolean;
+  initRepoIfMissing?: boolean;
+  repoUrl?: string;
+  cloneRepo?: boolean;
 };
 
 export type OnCallProjectRegistry = {
@@ -62,6 +92,17 @@ export type OnCallProjectRegistry = {
     projectId: string,
     patch: OnCallProjectRuntimeMetadataPatch,
   ) => Promise<OnCallProject | null>;
+  bootstrapProject: (
+    projectId: string,
+    input?: OnCallProjectBootstrapInput,
+  ) => Promise<OnCallProject | null>;
+  detectProjectRuntimeFamily: (projectId: string) => Promise<string | null>;
+  getProjectBootstrapState: (projectId: string) => Promise<OnCallProjectBootstrapState | null>;
+  setProjectExecutionProfile: (
+    projectId: string,
+    profile: Partial<OnCallExecutionProfile>,
+  ) => Promise<OnCallProject | null>;
+  refreshProjectRepoState: (projectId: string) => Promise<OnCallProject | null>;
 };
 
 type OnCallProjectRegistryConfig = {
@@ -207,8 +248,54 @@ function normalizeProject(project: OnCallProject): OnCallProject {
     lastRuntimeCheckAt: project.lastRuntimeCheckAt ?? null,
     workspaceBootstrappedAt: project.workspaceBootstrappedAt ?? null,
     workspaceBootstrapError: project.workspaceBootstrapError ?? null,
+    bootstrapStatus: project.bootstrapStatus ?? "uninitialized",
+    bootstrapError: project.bootstrapError ?? null,
+    repoUrl: project.repoUrl ?? null,
+    repoStatus: project.repoStatus ?? "missing",
+    branch: project.branch ?? null,
+    lastRepoSyncAt: project.lastRepoSyncAt ?? null,
+    repoError: project.repoError ?? null,
+    executionProfile:
+      project.executionProfile ?? createExecutionProfileDefaults(project.runtimeFamily),
     updatedAt: project.updatedAt ?? nowIso(),
     createdAt: project.createdAt ?? nowIso(),
+  };
+}
+
+export function createExecutionProfileDefaults(
+  runtimeFamily: string | null,
+): OnCallExecutionProfile {
+  const family = runtimeFamily ?? process.env.TELECLAW_BOOTSTRAP_DEFAULT_RUNTIME ?? "generic";
+  if (family === "python") {
+    return {
+      installCommand: process.env.TELECLAW_DEFAULT_PYTHON_INSTALL_COMMAND ?? "uv sync",
+      testCommand: process.env.TELECLAW_DEFAULT_PYTHON_TEST_COMMAND ?? "pytest",
+      lintCommand: "ruff check .",
+      buildCommand: "python -m build",
+      runCommand: "python main.py",
+      packageManager: "uv",
+      preferredShell: "bash",
+    };
+  }
+  if (family === "node") {
+    return {
+      installCommand: process.env.TELECLAW_DEFAULT_NODE_INSTALL_COMMAND ?? "npm install",
+      testCommand: process.env.TELECLAW_DEFAULT_NODE_TEST_COMMAND ?? "npm test",
+      lintCommand: "npm run lint",
+      buildCommand: "npm run build",
+      runCommand: "npm run dev",
+      packageManager: "npm",
+      preferredShell: "bash",
+    };
+  }
+  return {
+    installCommand: "echo 'install dependencies'",
+    testCommand: "echo 'run tests'",
+    lintCommand: "echo 'run lint'",
+    buildCommand: "echo 'run build'",
+    runCommand: "echo 'run project'",
+    packageManager: "generic",
+    preferredShell: "bash",
   };
 }
 
@@ -300,6 +387,7 @@ export function createOnCallProjectRegistry(
     ...resolveConfig(),
     ...config,
   };
+  const repo = createRepoModule();
 
   return {
     async listProjects() {
@@ -333,6 +421,14 @@ export function createOnCallProjectRegistry(
         runtimeError: input.runtimeError ?? null,
         workspaceBootstrappedAt: input.workspaceBootstrappedAt ?? null,
         workspaceBootstrapError: input.workspaceBootstrapError ?? null,
+        bootstrapStatus: "uninitialized",
+        bootstrapError: null,
+        repoUrl: null,
+        repoStatus: "missing",
+        branch: null,
+        lastRepoSyncAt: null,
+        repoError: null,
+        executionProfile: createExecutionProfileDefaults(input.runtimeFamily ?? null),
         createdAt: now,
         updatedAt: now,
       };
@@ -428,11 +524,141 @@ export function createOnCallProjectRegistry(
       const next: OnCallProject = {
         ...current,
         ...patch,
+        executionProfile: patch.executionProfile
+          ? { ...current.executionProfile, ...patch.executionProfile }
+          : current.executionProfile,
         updatedAt: nowIso(),
       };
       store.projects[index] = next;
       await writeStore(resolvedConfig, store);
       return next;
+    },
+
+    async detectProjectRuntimeFamily(projectId) {
+      const project = await this.getProjectById(projectId);
+      if (!project) {
+        return null;
+      }
+      return await detectRuntimeFamily(project);
+    },
+
+    async getProjectBootstrapState(projectId) {
+      const project = await this.getProjectById(projectId);
+      if (!project) {
+        return null;
+      }
+      return {
+        bootstrapStatus: project.bootstrapStatus,
+        bootstrapError: project.bootstrapError,
+        repoUrl: project.repoUrl,
+        repoStatus: project.repoStatus,
+        branch: project.branch,
+        lastRepoSyncAt: project.lastRepoSyncAt,
+        repoError: project.repoError,
+      };
+    },
+
+    async setProjectExecutionProfile(projectId, profile) {
+      const project = await this.getProjectById(projectId);
+      if (!project) {
+        return null;
+      }
+      return await this.updateProjectRuntimeMetadata(projectId, {
+        executionProfile: {
+          ...project.executionProfile,
+          ...profile,
+        },
+      });
+    },
+
+    async refreshProjectRepoState(projectId) {
+      const project = await this.getProjectById(projectId);
+      if (!project) {
+        return null;
+      }
+      const repoState = await repo.refreshRepoState(project);
+      return await this.updateProjectRuntimeMetadata(projectId, {
+        repoStatus: repoState.repoStatus,
+        branch: repoState.branch,
+        lastRepoSyncAt: repoState.lastRepoSyncAt,
+        repoError: repoState.repoError,
+      });
+    },
+
+    async bootstrapProject(projectId, input = {}) {
+      const current = await this.getProjectById(projectId);
+      if (!current) {
+        return null;
+      }
+      await this.updateProjectRuntimeMetadata(projectId, {
+        bootstrapStatus: "bootstrapping",
+        bootstrapError: null,
+      });
+
+      let project = (await this.getProjectById(projectId)) ?? current;
+      try {
+        const workspaceResult = await bootstrapProjectWorkspace(project, {
+          createIfMissing: input.createWorkspace ?? true,
+        });
+        if (!workspaceResult.ok) {
+          return await this.updateProjectRuntimeMetadata(projectId, {
+            bootstrapStatus: "error",
+            bootstrapError: workspaceResult.error ?? "bootstrap failed",
+            runtimeError: workspaceResult.error ?? "bootstrap failed",
+          });
+        }
+
+        if (input.detectRuntimeFamily ?? true) {
+          const runtimeFamily = await detectRuntimeFamily(project);
+          await this.updateProjectRuntimeMetadata(projectId, {
+            runtimeFamily,
+            executionProfile: createExecutionProfileDefaults(runtimeFamily),
+          });
+        }
+
+        project = (await this.getProjectById(projectId)) ?? project;
+        if (input.repoUrl && input.cloneRepo) {
+          const cloned = await repo.cloneRepo(project, input.repoUrl);
+          await this.updateProjectRuntimeMetadata(projectId, {
+            repoUrl: input.repoUrl,
+            repoStatus: cloned.repoStatus,
+            branch: cloned.branch,
+            lastRepoSyncAt: cloned.lastRepoSyncAt,
+            repoError: cloned.repoError,
+          });
+        } else {
+          const inspected = await repo.inspectRepo(project);
+          if (!inspected.isRepo && (input.initRepoIfMissing ?? false)) {
+            const initialized = await repo.initRepo(project);
+            await this.updateProjectRuntimeMetadata(projectId, {
+              repoStatus: initialized.repoStatus,
+              branch: initialized.branch,
+              lastRepoSyncAt: initialized.lastRepoSyncAt,
+              repoError: initialized.repoError,
+            });
+          } else {
+            await this.updateProjectRuntimeMetadata(projectId, {
+              repoStatus: inspected.status,
+              branch: inspected.branch,
+              lastRepoSyncAt: nowIso(),
+              repoError: inspected.error ?? null,
+            });
+          }
+        }
+
+        return await this.updateProjectRuntimeMetadata(projectId, {
+          bootstrapStatus: "ready",
+          bootstrapError: null,
+          workspaceBootstrappedAt: workspaceResult.checkedAt,
+          workspaceBootstrapError: null,
+        });
+      } catch (error) {
+        return await this.updateProjectRuntimeMetadata(projectId, {
+          bootstrapStatus: "error",
+          bootstrapError: error instanceof Error ? error.message : "bootstrap failed",
+          workspaceBootstrapError: error instanceof Error ? error.message : "bootstrap failed",
+        });
+      }
     },
   };
 }

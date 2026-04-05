@@ -63,3 +63,7 @@ Runtime start/attach is policy-gated:
 - optional runtime family allowlist can be enforced
 
 See [OnCallDev Project Routing](/oncalldev-project-routing) and [OnCallDev Session Model](/oncalldev-session-model).
+
+## Bootstrap and repo awareness
+
+Runtime orchestration now consumes project bootstrap state (`bootstrapStatus`) plus repo metadata (`repoStatus`, `branch`) before execution.
