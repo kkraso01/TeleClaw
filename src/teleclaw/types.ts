@@ -41,6 +41,8 @@ export type OnCallProject = {
   lastRuntimeStartAt: string | null;
   lastRuntimeCheckAt: string | null;
   runtimeError: string | null;
+  workspaceBootstrappedAt: string | null;
+  workspaceBootstrapError: string | null;
   description?: string;
   tags?: string[];
   allowedMounts?: string[];
@@ -136,10 +138,17 @@ export type OnCallWorkerProgressEvent = {
 
 export type OnCallRuntimeEventType =
   | "runtime.ensure_requested"
+  | "runtime.inspect_started"
+  | "runtime.inspect_succeeded"
+  | "runtime.created"
   | "runtime.started"
   | "runtime.reused"
   | "runtime.stopped"
   | "runtime.restarted"
+  | "runtime.reconciled"
+  | "runtime.stale"
+  | "runtime.bootstrap_completed"
+  | "runtime.bootstrap_failed"
   | "runtime.validation_failed"
   | "runtime.error";
 

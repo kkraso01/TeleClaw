@@ -59,7 +59,9 @@ Each successful switch is also recorded in TeleClaw memory as a durable `project
 Routing now enforces runtime lifecycle before worker execution.
 
 - one project maps to one backend-controlled runtime binding
+- router reconciles runtime state before ensure/start actions
 - router ensures and validates runtime before adapter calls
 - runtime failures return structured runtime outcomes (`runtime_missing`, `runtime_invalid`, `runtime_error`)
+- runtime status queries prefer reconciled provider inspection and include container + error details
 
 See [OnCallDev Runtime Model](/oncalldev-runtime-model).

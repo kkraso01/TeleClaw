@@ -1,6 +1,13 @@
-import path from "node:path";
 import type { OnCallProjectRegistry } from "../projects/index.js";
+import {
+  bootstrapProjectWorkspace,
+  detectRuntimeFamily,
+  ensureWorkspace,
+  validateProjectWorkspacePolicy,
+} from "../projects/index.js";
 import type { OnCallPolicyError, OnCallProject, OnCallRuntimeStatus } from "../types.js";
+import { createDockerRuntimeProvider } from "./providers/docker.js";
+import { createInMemoryRuntimeProvider, inferRuntimeFamily } from "./providers/local.js";
 
 export type OnCallRuntimeState = {
   status: OnCallRuntimeStatus;
@@ -31,6 +38,7 @@ export type OnCallRuntimeValidationResult =
 
 export type OnCallRuntimeProvider = {
   ensure: (project: OnCallProject) => Promise<OnCallRuntimeBindingResult>;
+  inspect: (project: OnCallProject) => Promise<OnCallRuntimeState>;
   getStatus: (project: OnCallProject) => Promise<OnCallRuntimeState>;
   start: (project: OnCallProject) => Promise<OnCallRuntimeState>;
   stop: (project: OnCallProject) => Promise<OnCallRuntimeState>;
@@ -45,6 +53,8 @@ export type OnCallRuntimeController = {
   stopProjectRuntime: (project: OnCallProject) => Promise<OnCallRuntimeState>;
   restartProjectRuntime: (project: OnCallProject) => Promise<OnCallRuntimeState>;
   validateProjectRuntime: (project: OnCallProject) => Promise<OnCallRuntimeValidationResult>;
+  reconcileProjectRuntime: (project: OnCallProject) => Promise<OnCallRuntimeState>;
+  reconcileAllProjectRuntimes: () => Promise<OnCallRuntimeState[]>;
 };
 
 type RuntimeControllerDeps = {
@@ -54,157 +64,6 @@ type RuntimeControllerDeps = {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function inferRuntimeFamily(project: OnCallProject): string {
-  if (project.runtimeFamily) {
-    return project.runtimeFamily;
-  }
-  if (project.language === "ts" || project.language === "js") {
-    return "node";
-  }
-  if (project.language === "py") {
-    return "python";
-  }
-  return "generic";
-}
-
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-");
-}
-
-function buildContainerName(project: OnCallProject): string {
-  return `teleclaw-${slugify(project.id)}`;
-}
-
-function toRuntimeState(project: OnCallProject): OnCallRuntimeState {
-  return {
-    status: project.runtimeStatus,
-    containerId: project.containerId,
-    containerName: project.containerName,
-    runtimeFamily: project.runtimeFamily,
-    workspacePath: path.resolve(project.workspacePath),
-    checkedAt: nowIso(),
-    error: project.runtimeError ?? undefined,
-  };
-}
-
-function createInMemoryRuntimeProvider(): OnCallRuntimeProvider {
-  const state = new Map<string, OnCallRuntimeState>();
-
-  function getOrDefault(project: OnCallProject): OnCallRuntimeState {
-    const current = state.get(project.id);
-    if (current) {
-      return { ...current, checkedAt: nowIso() };
-    }
-    return toRuntimeState(project);
-  }
-
-  function ensureRunningRuntime(project: OnCallProject): OnCallRuntimeState {
-    const existing = getOrDefault(project);
-    if (existing.status === "running" && existing.containerId) {
-      return existing;
-    }
-    const runtimeFamily = inferRuntimeFamily(project);
-    const started: OnCallRuntimeState = {
-      status: "running",
-      containerId: existing.containerId ?? `ctr-${slugify(project.id)}`,
-      containerName: existing.containerName ?? buildContainerName(project),
-      runtimeFamily,
-      workspacePath: path.resolve(project.workspacePath),
-      checkedAt: nowIso(),
-    };
-    state.set(project.id, started);
-    return started;
-  }
-
-  return {
-    async ensure(project) {
-      const current = getOrDefault(project);
-      if (current.status === "running" && current.containerId) {
-        state.set(project.id, current);
-        return {
-          outcome: "runtime_reused",
-          status: current,
-        };
-      }
-      const started = ensureRunningRuntime(project);
-      return {
-        outcome: "runtime_started",
-        status: started,
-      };
-    },
-
-    async getStatus(project) {
-      const current = getOrDefault(project);
-      state.set(project.id, current);
-      return current;
-    },
-
-    async start(project) {
-      return ensureRunningRuntime(project);
-    },
-
-    async stop(project) {
-      const current = getOrDefault(project);
-      const stopped: OnCallRuntimeState = {
-        ...current,
-        status: "stopped",
-        checkedAt: nowIso(),
-      };
-      state.set(project.id, stopped);
-      return stopped;
-    },
-
-    async restart(project) {
-      const started = ensureRunningRuntime(project);
-      return {
-        ...started,
-        checkedAt: nowIso(),
-      };
-    },
-
-    async validate(project) {
-      const current = getOrDefault(project);
-      if (current.status === "running" && current.containerId) {
-        return { ok: true, status: current };
-      }
-      return {
-        ok: false,
-        status: current,
-        reason: "runtime_not_running",
-      };
-    },
-  };
-}
-
-function createDockerRuntimeProvider(): OnCallRuntimeProvider {
-  const fallback = createInMemoryRuntimeProvider();
-  return {
-    async ensure(project) {
-      // TODO(teleclaw): Replace seam fallback with real Docker lifecycle integration.
-      return await fallback.ensure(project);
-    },
-    async getStatus(project) {
-      return await fallback.getStatus(project);
-    },
-    async start(project) {
-      return await fallback.start(project);
-    },
-    async stop(project) {
-      return await fallback.stop(project);
-    },
-    async restart(project) {
-      return await fallback.restart(project);
-    },
-    async validate(project) {
-      return await fallback.validate(project);
-    },
-  };
 }
 
 export function createOnCallRuntimeProvider(): OnCallRuntimeProvider {
@@ -233,6 +92,55 @@ async function persistRuntimeState(
   return status;
 }
 
+async function bootstrapWorkspaceIfEnabled(
+  projects: OnCallProjectRegistry,
+  project: OnCallProject,
+): Promise<OnCallProject> {
+  const bootstrapEnabled = process.env.TELECLAW_RUNTIME_BOOTSTRAP_ENABLED !== "0";
+  if (!bootstrapEnabled) {
+    return project;
+  }
+
+  const workspacePolicy = validateProjectWorkspacePolicy(project);
+  if (workspacePolicy) {
+    await projects.updateProjectRuntimeMetadata(project.id, {
+      runtimeStatus: "error",
+      runtimeError: workspacePolicy.message,
+      lastRuntimeCheckAt: nowIso(),
+    });
+    return project;
+  }
+
+  await ensureWorkspace(project, { createIfMissing: true });
+  const detectedFamily = await detectRuntimeFamily(project);
+  const bootstrap = await bootstrapProjectWorkspace(project, {
+    createIfMissing: true,
+    runtimeFamily: detectedFamily ?? inferRuntimeFamily(project),
+  });
+  await projects.updateProjectRuntimeMetadata(project.id, {
+    runtimeFamily: bootstrap.runtimeFamily,
+    workspaceBootstrappedAt: bootstrap.ok ? bootstrap.checkedAt : project.workspaceBootstrappedAt,
+    workspaceBootstrapError: bootstrap.ok
+      ? null
+      : (bootstrap.error ?? "workspace bootstrap failed"),
+    runtimeError: bootstrap.ok ? null : (bootstrap.error ?? "workspace bootstrap failed"),
+    runtimeStatus: bootstrap.ok ? project.runtimeStatus : "error",
+    lastRuntimeCheckAt: bootstrap.checkedAt,
+  });
+  if (!bootstrap.ok) {
+    return project;
+  }
+
+  const refreshed = await projects.getProjectById(project.id);
+  return refreshed ?? project;
+}
+
+function shouldMarkAsStale(status: OnCallRuntimeState): boolean {
+  return (
+    status.error === "container_not_found" || (status.status === "error" && !status.containerId)
+  );
+}
+
 export function createOnCallRuntimeController(
   deps: RuntimeControllerDeps,
 ): OnCallRuntimeController {
@@ -240,13 +148,15 @@ export function createOnCallRuntimeController(
 
   return {
     async ensureProjectRuntime(project) {
-      await deps.projects.updateProjectRuntimeMetadata(project.id, {
+      const bootstrappedProject = await bootstrapWorkspaceIfEnabled(deps.projects, project);
+
+      await deps.projects.updateProjectRuntimeMetadata(bootstrappedProject.id, {
         runtimeStatus: "starting",
         lastRuntimeCheckAt: nowIso(),
       });
 
-      const ensured = await provider.ensure(project);
-      await persistRuntimeState(deps.projects, project, ensured.status);
+      const ensured = await provider.ensure(bootstrappedProject);
+      await persistRuntimeState(deps.projects, bootstrappedProject, ensured.status);
       return ensured;
     },
 
@@ -257,8 +167,9 @@ export function createOnCallRuntimeController(
     },
 
     async startProjectRuntime(project) {
-      const status = await provider.start(project);
-      await persistRuntimeState(deps.projects, project, status);
+      const bootstrappedProject = await bootstrapWorkspaceIfEnabled(deps.projects, project);
+      const status = await provider.start(bootstrappedProject);
+      await persistRuntimeState(deps.projects, bootstrappedProject, status);
       return status;
     },
 
@@ -269,8 +180,9 @@ export function createOnCallRuntimeController(
     },
 
     async restartProjectRuntime(project) {
-      const status = await provider.restart(project);
-      await persistRuntimeState(deps.projects, project, status);
+      const bootstrappedProject = await bootstrapWorkspaceIfEnabled(deps.projects, project);
+      const status = await provider.restart(bootstrappedProject);
+      await persistRuntimeState(deps.projects, bootstrappedProject, status);
       return status;
     },
 
@@ -286,5 +198,38 @@ export function createOnCallRuntimeController(
       }
       return validation;
     },
+
+    async reconcileProjectRuntime(project) {
+      const status = await provider.inspect(project);
+      if (shouldMarkAsStale(status)) {
+        const stale: OnCallRuntimeState = {
+          ...status,
+          status: "unbound",
+          containerId: null,
+          containerName: null,
+          error: status.error ?? "runtime_stale",
+          checkedAt: nowIso(),
+        };
+        await persistRuntimeState(deps.projects, project, stale);
+        return stale;
+      }
+      await persistRuntimeState(deps.projects, project, status);
+      return status;
+    },
+
+    async reconcileAllProjectRuntimes() {
+      const projects = await deps.projects.listProjects();
+      const reconciled: OnCallRuntimeState[] = [];
+      for (const project of projects) {
+        reconciled.push(await this.reconcileProjectRuntime(project));
+      }
+      return reconciled;
+    },
   };
 }
+
+export {
+  buildDeterministicContainerName,
+  inferRuntimeFamily,
+  selectImage,
+} from "./providers/docker.js";

@@ -41,6 +41,8 @@ function buildResolvedProject() {
     lastRuntimeStartAt: null,
     lastRuntimeCheckAt: null,
     runtimeError: null,
+    workspaceBootstrappedAt: null,
+    workspaceBootstrapError: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -55,6 +57,14 @@ describe("createOnCallRouter runtime lifecycle", () => {
       summarize: vi.fn().mockResolvedValue({ status: "ok", text: "summary" }),
     };
     const runtime = {
+      reconcileProjectRuntime: vi.fn().mockResolvedValue({
+        status: "running",
+        containerId: "ctr-billing",
+        containerName: "teleclaw-billing",
+        runtimeFamily: "node",
+        workspacePath: `${process.cwd()}/workspace/billing`,
+        checkedAt: new Date().toISOString(),
+      }),
       ensureProjectRuntime: vi.fn().mockResolvedValue({
         outcome: "runtime_started",
         status: {
@@ -100,6 +110,7 @@ describe("createOnCallRouter runtime lifecycle", () => {
           project: buildResolvedProject(),
         }),
         rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
       } as never,
       sessions: sessions as never,
       memory: {
@@ -155,6 +166,7 @@ describe("createOnCallRouter runtime lifecycle", () => {
           project: buildResolvedProject(),
         }),
         rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
       } as never,
       sessions: {
         getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
@@ -174,6 +186,14 @@ describe("createOnCallRouter runtime lifecycle", () => {
       } as never,
       worker: worker as never,
       runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
         ensureProjectRuntime: vi.fn().mockResolvedValue({
           outcome: "runtime_reused",
           status: {
@@ -225,6 +245,14 @@ describe("createOnCallRouter runtime lifecycle", () => {
       summarize: vi.fn(),
     };
     const runtime = {
+      reconcileProjectRuntime: vi.fn().mockResolvedValue({
+        status: "running",
+        containerId: "ctr-billing",
+        containerName: "teleclaw-billing",
+        runtimeFamily: "node",
+        workspacePath: `${process.cwd()}/workspace/billing`,
+        checkedAt: new Date().toISOString(),
+      }),
       ensureProjectRuntime: vi.fn().mockResolvedValue({
         outcome: "runtime_reused",
         status: {
@@ -268,6 +296,7 @@ describe("createOnCallRouter runtime lifecycle", () => {
           project: buildResolvedProject(),
         }),
         rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
       } as never,
       sessions: {
         getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
@@ -313,6 +342,7 @@ describe("createOnCallRouter runtime lifecycle", () => {
           project: buildResolvedProject(),
         }),
         rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
       } as never,
       sessions: {
         getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
@@ -337,6 +367,14 @@ describe("createOnCallRouter runtime lifecycle", () => {
         summarize: vi.fn().mockResolvedValue({ status: "ok", text: "summary" }),
       } as never,
       runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
         ensureProjectRuntime: vi.fn().mockResolvedValue({
           outcome: "runtime_started",
           status: {

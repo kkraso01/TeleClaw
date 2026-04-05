@@ -39,10 +39,17 @@ Runtime-focused requests return runtime-aware status text and skip unnecessary w
 Runtime lifecycle is persisted in memory as runtime events:
 
 - `runtime.ensure_requested`
+- `runtime.inspect_started`
+- `runtime.inspect_succeeded`
+- `runtime.created`
 - `runtime.started`
 - `runtime.reused`
 - `runtime.stopped`
 - `runtime.restarted`
+- `runtime.reconciled`
+- `runtime.stale`
+- `runtime.bootstrap_completed`
+- `runtime.bootstrap_failed`
 - `runtime.validation_failed`
 - `runtime.error`
 
@@ -50,7 +57,7 @@ These events support auditability and follow-up questions like "why didn’t it 
 
 ## Current limitations
 
-- Docker provider is a seam and currently falls back to local provider behavior.
-- Runtime health validation is status-based and does not yet run deep container health checks.
+- Runtime health validation is status-based and does not yet run deep app-level health probes.
+- OpenHands backends may not all enforce hard container pinning yet; TeleClaw preserves explicit runtime binding context for the adapter seam.
 
 See [OnCallDev Memory Model](/oncalldev-memory-model) for how lifecycle events are queryable.

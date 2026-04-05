@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { OnCallProject, OnCallRuntimeStatus } from "../types.js";
 
@@ -24,6 +24,8 @@ export type OnCallProjectCreateInput = Omit<
   | "lastRuntimeCheckAt"
   | "lastRuntimeStartAt"
   | "runtimeError"
+  | "workspaceBootstrappedAt"
+  | "workspaceBootstrapError"
 > & {
   aliases?: string[];
   runtimeStatus?: OnCallRuntimeStatus;
@@ -31,6 +33,8 @@ export type OnCallProjectCreateInput = Omit<
   lastRuntimeCheckAt?: string | null;
   lastRuntimeStartAt?: string | null;
   runtimeError?: string | null;
+  workspaceBootstrappedAt?: string | null;
+  workspaceBootstrapError?: string | null;
 };
 
 export type OnCallProjectRuntimeMetadataPatch = {
@@ -41,6 +45,8 @@ export type OnCallProjectRuntimeMetadataPatch = {
   lastRuntimeStartAt?: string | null;
   lastRuntimeCheckAt?: string | null;
   runtimeError?: string | null;
+  workspaceBootstrappedAt?: string | null;
+  workspaceBootstrapError?: string | null;
 };
 
 export type OnCallProjectRegistry = {
@@ -62,6 +68,15 @@ type OnCallProjectRegistryConfig = {
   storePath: string;
   projectsRoot: string;
   additionalAllowedRoots: string[];
+};
+
+export type OnCallWorkspaceBootstrapResult = {
+  ok: boolean;
+  workspacePath: string;
+  runtimeFamily: string;
+  createdWorkspace: boolean;
+  checkedAt: string;
+  error?: string;
 };
 
 function nowIso() {
@@ -119,16 +134,39 @@ function isPathWithinRoot(workspacePath: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+export function resolveAllowedWorkspaceRoots(config?: {
+  projectsRoot?: string;
+  additionalAllowedRoots?: string[];
+}): string[] {
+  const resolved = resolveConfig();
+  return dedupe([
+    path.resolve(config?.projectsRoot ?? resolved.projectsRoot),
+    ...(config?.additionalAllowedRoots ?? resolved.additionalAllowedRoots).map((entry) =>
+      path.resolve(entry),
+    ),
+  ]);
+}
+
 function assertWorkspacePathAllowed(
   workspacePath: string,
   config: OnCallProjectRegistryConfig,
 ): string {
   const resolved = path.resolve(workspacePath);
-  const allowedRoots = dedupe([config.projectsRoot, ...config.additionalAllowedRoots]);
+  const allowedRoots = resolveAllowedWorkspaceRoots(config);
   if (!allowedRoots.some((root) => isPathWithinRoot(resolved, root))) {
     throw new Error(`workspace path must be under allowed roots: ${resolved}`);
   }
   return resolved;
+}
+
+export function validateProjectWorkspacePolicy(project: OnCallProject): Error | null {
+  try {
+    const config = resolveConfig();
+    assertWorkspacePathAllowed(project.workspacePath, config);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error("workspace policy validation failed");
+  }
 }
 
 async function readStore(config: OnCallProjectRegistryConfig): Promise<ProjectsStoreShape> {
@@ -167,9 +205,92 @@ function normalizeProject(project: OnCallProject): OnCallProject {
     runtimeError: project.runtimeError ?? null,
     lastRuntimeStartAt: project.lastRuntimeStartAt ?? null,
     lastRuntimeCheckAt: project.lastRuntimeCheckAt ?? null,
+    workspaceBootstrappedAt: project.workspaceBootstrappedAt ?? null,
+    workspaceBootstrapError: project.workspaceBootstrapError ?? null,
     updatedAt: project.updatedAt ?? nowIso(),
     createdAt: project.createdAt ?? nowIso(),
   };
+}
+
+export async function detectRuntimeFamily(project: OnCallProject): Promise<string> {
+  if (project.runtimeFamily) {
+    return project.runtimeFamily;
+  }
+  if (project.language === "py") {
+    return "python";
+  }
+  if (project.language === "ts" || project.language === "js") {
+    return "node";
+  }
+
+  const workspacePath = path.resolve(project.workspacePath);
+  const hints = [
+    { file: "package.json", family: "node" },
+    { file: "pyproject.toml", family: "python" },
+    { file: "requirements.txt", family: "python" },
+  ] as const;
+
+  for (const hint of hints) {
+    try {
+      await access(path.join(workspacePath, hint.file));
+      return hint.family;
+    } catch {
+      continue;
+    }
+  }
+
+  return "generic";
+}
+
+export async function ensureWorkspace(
+  project: OnCallProject,
+  options: { createIfMissing?: boolean } = {},
+): Promise<{ workspacePath: string; createdWorkspace: boolean }> {
+  const config = resolveConfig();
+  const workspacePath = assertWorkspacePathAllowed(project.workspacePath, config);
+  let createdWorkspace = false;
+
+  try {
+    await access(workspacePath);
+  } catch {
+    if (!options.createIfMissing) {
+      throw new Error(`workspace path does not exist: ${workspacePath}`);
+    }
+    await mkdir(workspacePath, { recursive: true });
+    createdWorkspace = true;
+  }
+
+  return {
+    workspacePath,
+    createdWorkspace,
+  };
+}
+
+export async function bootstrapProjectWorkspace(
+  project: OnCallProject,
+  options: { createIfMissing?: boolean; runtimeFamily?: string } = {},
+): Promise<OnCallWorkspaceBootstrapResult> {
+  const checkedAt = nowIso();
+  try {
+    const ensured = await ensureWorkspace(project, { createIfMissing: options.createIfMissing });
+    const runtimeFamily = options.runtimeFamily ?? (await detectRuntimeFamily(project));
+    return {
+      ok: true,
+      workspacePath: ensured.workspacePath,
+      runtimeFamily,
+      createdWorkspace: ensured.createdWorkspace,
+      checkedAt,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      workspacePath: path.resolve(project.workspacePath),
+      runtimeFamily: options.runtimeFamily ?? "generic",
+      createdWorkspace: false,
+      checkedAt,
+      error: error instanceof Error ? error.message : "workspace bootstrap failed",
+    };
+  }
 }
 
 export function createOnCallProjectRegistry(
@@ -210,6 +331,8 @@ export function createOnCallProjectRegistry(
         lastRuntimeStartAt: input.lastRuntimeStartAt ?? null,
         lastRuntimeCheckAt: input.lastRuntimeCheckAt ?? null,
         runtimeError: input.runtimeError ?? null,
+        workspaceBootstrappedAt: input.workspaceBootstrappedAt ?? null,
+        workspaceBootstrapError: input.workspaceBootstrapError ?? null,
         createdAt: now,
         updatedAt: now,
       };
