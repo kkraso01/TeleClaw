@@ -38,6 +38,7 @@ The router does not silently guess when multiple projects match.
 - Ambiguous references return candidate project names and require clarification.
 
 Session project binding is persisted immediately after a successful switch.
+Each successful switch is also recorded in TeleClaw memory as a durable `project_switch` event.
 
 ## Safety boundaries
 
@@ -51,3 +52,4 @@ Session project binding is persisted immediately after a successful switch.
 - Move project creation/administration to explicit CLI/API commands.
 - Add per-user authorization for project access (current routing is chat-scoped).
 - Add stricter fuzzy-matching controls per deployment policy.
+- Add per-project memory retention controls once compaction policy is configurable.

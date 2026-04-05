@@ -26,4 +26,15 @@ describe("resolveOnCallIntent", () => {
     expect(intent.action).toBe("resume");
     expect(intent.replyMode).toBe("voice");
   });
+
+  it("maps 'what changed' to summarize action", () => {
+    const intent = resolveOnCallIntent({
+      channel: "telegram",
+      userId: "u1",
+      body: "what changed in billing",
+      timestampMs: Date.now(),
+    });
+
+    expect(intent.action).toBe("summarize");
+  });
 });

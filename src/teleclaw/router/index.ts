@@ -8,7 +8,17 @@ import {
 } from "../policy/index.js";
 import { createOnCallProjectRegistry, type OnCallProjectRegistry } from "../projects/index.js";
 import { createOnCallSessionManager, type OnCallSessionManager } from "../sessions/index.js";
-import type { OnCallInput, OnCallRouteOutcome, OnCallWorkerResult } from "../types.js";
+import type {
+  OnCallAction,
+  OnCallInput,
+  OnCallMemoryEvent,
+  OnCallRouteOutcome,
+  OnCallSessionState,
+  OnCallVoiceSynthesisResult,
+  OnCallWorkerProgressEvent,
+  OnCallWorkerResult,
+} from "../types.js";
+import { createOnCallVoiceService, type OnCallVoiceService } from "../voice/index.js";
 import {
   createOpenHandsAdapter,
   type OnCallWorkerContext,
@@ -18,11 +28,15 @@ import {
 export type OnCallRouterResponse = {
   text: string;
   replyMode: "text" | "voice";
+  voiceReply?: OnCallVoiceSynthesisResult;
   outcome: OnCallRouteOutcome;
 };
 
 export type OnCallRouter = {
   processInbound: (input: OnCallInput) => Promise<OnCallRouterResponse>;
+  processVoiceInbound: (
+    input: Omit<OnCallInput, "body"> & { body?: string },
+  ) => Promise<OnCallRouterResponse>;
 };
 
 type OnCallRouterDeps = {
@@ -30,6 +44,7 @@ type OnCallRouterDeps = {
   sessions?: OnCallSessionManager;
   memory?: OnCallMemoryStore;
   worker?: OpenHandsAdapter;
+  voice?: OnCallVoiceService;
 };
 
 const defaultAdapter = createOpenHandsAdapter({
@@ -40,8 +55,43 @@ const defaultAdapter = createOpenHandsAdapter({
   model: process.env.LLM_MODEL,
 });
 
+function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" {
+  if (requested === "voice") {
+    return "voice";
+  }
+  return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
+}
+
+function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
+  return {
+    ...event,
+    id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
+  };
+}
+
+async function maybeSynthesizeVoiceReply(params: {
+  responseText: string;
+  replyMode: "text" | "voice";
+  voice: OnCallVoiceService;
+  sessionId: string;
+  projectId?: string;
+}): Promise<OnCallVoiceSynthesisResult | undefined> {
+  if (params.replyMode !== "voice" || process.env.ENABLE_VOICE_REPLIES !== "1") {
+    return undefined;
+  }
+
+  try {
+    return await params.voice.synthesizeSpeech(params.responseText, {
+      sessionId: params.sessionId,
+      projectId: params.projectId,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 async function invokeWorker(params: {
-  action: string;
+  action: OnCallAction;
   worker: OpenHandsAdapter;
   projectId: string;
   text: string;
@@ -70,180 +120,529 @@ function buildReply(result: OnCallWorkerResult): string {
   return result.text;
 }
 
+function createMemoryBackedStatusText(params: {
+  summary: string;
+  session: OnCallSessionState;
+  action: OnCallAction;
+  projectName: string;
+}): string | null {
+  const summary = params.summary.trim();
+  const askedForSummary = params.action === "summarize";
+  const askedForStatus = params.action === "status";
+
+  if (!askedForSummary && !askedForStatus) {
+    return null;
+  }
+  if (!summary) {
+    return null;
+  }
+
+  return askedForSummary
+    ? `Summary for ${params.projectName}:\n${summary}`
+    : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}`;
+}
+
+async function persistProgress(params: {
+  memory: OnCallMemoryStore;
+  sessionId: string;
+  projectId: string;
+  sessions: OnCallSessionManager;
+  event: OnCallWorkerProgressEvent;
+}): Promise<void> {
+  await params.memory.appendEvent(
+    createEvent({
+      atMs: params.event.atMs,
+      sessionId: params.sessionId,
+      projectId: params.projectId,
+      type: "worker_status_progress",
+      progress: params.event,
+    }),
+  );
+
+  await params.sessions.appendRecentAction(params.sessionId, `progress:${params.event.kind}`);
+
+  await params.sessions.setStructuredState(params.sessionId, {
+    currentPhase: params.event.phase,
+    lastWorkerAction: params.event.kind,
+    nextSuggestedStep: params.event.nextSuggestedStep,
+    filesChanged: params.event.filesChanged,
+    testsPassing: params.event.testsPassing,
+    testsFailing: params.event.testsFailing,
+    blockers: params.event.blockers,
+  });
+}
+
 export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
   const projects = deps.projects ?? createOnCallProjectRegistry();
   const sessions = deps.sessions ?? createOnCallSessionManager();
   const memory = deps.memory ?? createOnCallMemoryStore();
   const worker = deps.worker ?? defaultAdapter;
+  const voice = deps.voice ?? createOnCallVoiceService();
 
-  return {
-    async processInbound(input) {
-      const intent = resolveOnCallIntent(input);
-      const replyMode = intent.replyMode;
-      const chatId = input.chatId ?? input.sessionKey ?? input.userId;
-      const session = await sessions.getOrCreateSession(chatId, input.userId);
-      const projectResolution = await projects.resolveProject({
-        projectRef: intent.projectRef ?? session.activeProjectId ?? undefined,
-        chatId,
-      });
+  async function processNormalized(input: OnCallInput): Promise<OnCallRouterResponse> {
+    const intent = resolveOnCallIntent(input);
+    const replyMode = resolveDefaultReplyMode(intent.replyMode);
+    const chatId = input.chatId ?? input.sessionKey ?? input.userId;
+    const session = await sessions.getOrCreateSession(chatId, input.userId);
 
-      if (projectResolution.type === "ambiguous") {
-        const outcome: OnCallRouteOutcome = {
-          type: "needs_clarification",
-          replyMode,
-          text: "I found multiple matching projects. Please clarify which project to use.",
-          candidates: projectResolution.candidates.map((candidate) => ({
-            id: candidate.id,
-            name: candidate.name,
-          })),
-        };
-        return {
-          text: outcome.text,
-          replyMode,
-          outcome,
-        };
-      }
-
-      if (projectResolution.type === "not_found") {
-        const outcome: OnCallRouteOutcome = {
-          type: "project_not_found",
-          replyMode,
-          text: intent.projectRef
-            ? `I could not find a project named "${intent.projectRef}".`
-            : "No active project is bound to this chat yet. Ask to switch to a project first.",
-          requestedRef: intent.projectRef,
-        };
-        return {
-          text: outcome.text,
-          replyMode,
-          outcome,
-        };
-      }
-
-      const project = projectResolution.project;
-      const workspacePolicy = validateWorkspacePath(project);
-      if (workspacePolicy) {
-        const outcome: OnCallRouteOutcome = {
-          type: "blocked_by_policy",
-          replyMode,
-          text: explainPolicyFailure(workspacePolicy),
-          projectId: project.id,
-          policy: workspacePolicy,
-        };
-        return { text: outcome.text, replyMode, outcome };
-      }
-
-      const bindPolicy = canBindProject(session, project);
-      if (bindPolicy) {
-        const outcome: OnCallRouteOutcome = {
-          type: "blocked_by_policy",
-          replyMode,
-          text: explainPolicyFailure(bindPolicy),
-          projectId: project.id,
-          policy: bindPolicy,
-        };
-        return { text: outcome.text, replyMode, outcome };
-      }
-
-      const executionContextPolicy = requireExecutionContext(project);
-      if (executionContextPolicy) {
-        const outcome: OnCallRouteOutcome = {
-          type: "blocked_by_policy",
-          replyMode,
-          text: explainPolicyFailure(executionContextPolicy),
-          projectId: project.id,
-          policy: executionContextPolicy,
-        };
-        return { text: outcome.text, replyMode, outcome };
-      }
-
-      const boundSession = await sessions.bindProject(session.sessionId, project.id);
-      if (!boundSession || boundSession.activeProjectId !== project.id) {
-        const outcome: OnCallRouteOutcome = {
-          type: "invalid_project_binding",
-          replyMode,
-          text: "Failed to bind chat session to project context safely.",
-          reason: "session_bind_failed",
-        };
-        return { text: outcome.text, replyMode, outcome };
-      }
-
-      await projects.rememberActiveProject(chatId, project.id);
-      await sessions.bindWorker(boundSession.sessionId, { containerId: project.containerId });
-
-      memory.appendEvent(boundSession, {
+    await memory.appendEvent(
+      createEvent({
         atMs: input.timestampMs,
-        type: "user",
+        sessionId: session.sessionId,
+        projectId: session.activeProjectId ?? undefined,
+        type: "inbound_user_message",
         text: intent.instruction,
-      });
+        channel: "telegram",
+        userId: input.userId,
+      }),
+    );
 
-      const workerContext: OnCallWorkerContext = {
-        sessionId: boundSession.sessionId,
-        workerSessionId: boundSession.workerBinding.workerSessionId,
-        workspacePath: project.workspacePath,
-        containerId: project.containerId,
-        summary: boundSession.summary,
-        structuredState: boundSession.structuredState,
+    await memory.appendEvent(
+      createEvent({
+        atMs: input.timestampMs,
+        sessionId: session.sessionId,
+        projectId: session.activeProjectId ?? undefined,
+        type: "resolved_intent",
+        action: intent.action,
+        instruction: intent.instruction,
+        projectRef: intent.projectRef,
+        replyMode,
+      }),
+    );
+
+    const projectResolution = await projects.resolveProject({
+      projectRef: intent.projectRef ?? session.activeProjectId ?? undefined,
+      chatId,
+    });
+
+    if (projectResolution.type === "ambiguous") {
+      const outcome: OnCallRouteOutcome = {
+        type: "needs_clarification",
+        replyMode,
+        text: "I found multiple matching projects. Please clarify which project to use.",
+        candidates: projectResolution.candidates.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+        })),
       };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          type: "router_decision",
+          outcomeType: outcome.type,
+          text: outcome.text,
+        }),
+      );
+      return {
+        text: outcome.text,
+        replyMode,
+        outcome,
+      };
+    }
 
-      let result: OnCallWorkerResult;
-      try {
-        result = await invokeWorker({
-          action: intent.action,
-          worker,
-          projectId: project.id,
-          text: intent.instruction,
-          context: workerContext,
-        });
-      } catch (error) {
-        const outcome: OnCallRouteOutcome = {
-          type: "worker_error",
-          replyMode,
-          text: `Worker execution failed: ${error instanceof Error ? error.message : "unknown error"}`,
-          projectId: project.id,
-        };
-        await sessions.appendRecentAction(boundSession.sessionId, `worker_error:${intent.action}`);
-        return { text: outcome.text, replyMode, outcome };
-      }
+    if (projectResolution.type === "not_found") {
+      const outcome: OnCallRouteOutcome = {
+        type: "project_not_found",
+        replyMode,
+        text: intent.projectRef
+          ? `I could not find a project named "${intent.projectRef}".`
+          : "No active project is bound to this chat yet. Ask to switch to a project first.",
+        requestedRef: intent.projectRef,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          type: "router_decision",
+          outcomeType: outcome.type,
+          text: outcome.text,
+        }),
+      );
+      return {
+        text: outcome.text,
+        replyMode,
+        outcome,
+      };
+    }
 
-      memory.appendEvent(boundSession, {
-        atMs: Date.now(),
-        type: "worker",
-        text: result.text,
+    const project = projectResolution.project;
+    const workspacePolicy = validateWorkspacePath(project);
+    if (workspacePolicy) {
+      const outcome: OnCallRouteOutcome = {
+        type: "blocked_by_policy",
+        replyMode,
+        text: explainPolicyFailure(workspacePolicy),
+        projectId: project.id,
+        policy: workspacePolicy,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: project.id,
+          type: "policy_block",
+          code: workspacePolicy.code,
+          message: workspacePolicy.message,
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    const bindPolicy = canBindProject(session, project);
+    if (bindPolicy) {
+      const outcome: OnCallRouteOutcome = {
+        type: "blocked_by_policy",
+        replyMode,
+        text: explainPolicyFailure(bindPolicy),
+        projectId: project.id,
+        policy: bindPolicy,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: project.id,
+          type: "policy_block",
+          code: bindPolicy.code,
+          message: bindPolicy.message,
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    const executionContextPolicy = requireExecutionContext(project);
+    if (executionContextPolicy) {
+      const outcome: OnCallRouteOutcome = {
+        type: "blocked_by_policy",
+        replyMode,
+        text: explainPolicyFailure(executionContextPolicy),
+        projectId: project.id,
+        policy: executionContextPolicy,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: project.id,
+          type: "policy_block",
+          code: executionContextPolicy.code,
+          message: executionContextPolicy.message,
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    const previousProjectId = session.activeProjectId ?? undefined;
+    const boundSession = await sessions.bindProject(session.sessionId, project.id);
+    if (!boundSession || boundSession.activeProjectId !== project.id) {
+      const outcome: OnCallRouteOutcome = {
+        type: "invalid_project_binding",
+        replyMode,
+        text: "Failed to bind chat session to project context safely.",
+        reason: "session_bind_failed",
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: project.id,
+          type: "router_decision",
+          outcomeType: outcome.type,
+          text: outcome.text,
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    if (previousProjectId !== project.id) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "project_switch",
+          fromProjectId: previousProjectId,
+          toProjectId: project.id,
+        }),
+      );
+    }
+
+    await projects.rememberActiveProject(chatId, project.id);
+    await sessions.bindWorker(boundSession.sessionId, { containerId: project.containerId });
+
+    await memory.mergeDurableFacts(
+      boundSession.sessionId,
+      {
+        preferredReplyMode: replyMode,
+        preferredProjectId: project.id,
+      },
+      project.id,
+    );
+
+    const memorySummary = await memory.getSummary(boundSession.sessionId, project.id);
+    const memoryState = await memory.getStructuredState(boundSession.sessionId, project.id);
+
+    const memoryBackedText = createMemoryBackedStatusText({
+      summary: memorySummary,
+      session: boundSession,
+      action: intent.action,
+      projectName: project.name,
+    });
+
+    if (memoryBackedText) {
+      const voiceReply = await maybeSynthesizeVoiceReply({
+        responseText: memoryBackedText,
+        replyMode,
+        voice,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
       });
-
-      if (result.summary) {
-        memory.updateSummary(boundSession, result.summary);
-        await sessions.setSummary(boundSession.sessionId, result.summary);
-      }
-
-      if (result.workerSessionId) {
-        await sessions.bindWorker(boundSession.sessionId, {
-          workerSessionId: result.workerSessionId,
-        });
-      }
-
-      await sessions.appendRecentAction(boundSession.sessionId, intent.action);
-
       const outcome: OnCallRouteOutcome = {
         type: "success",
         replyMode,
         projectId: project.id,
         projectName: project.name,
         sessionId: boundSession.sessionId,
-        text: buildReply(result),
+        text: memoryBackedText,
         execution: {
           action: intent.action,
-          status: result.status,
+          status: "ok",
+          source: "memory",
         },
-        summary: result.summary,
+        summary: memorySummary,
+        voiceMediaUrl: voiceReply?.mediaUrl,
       };
 
+      await sessions.appendRecentAction(boundSession.sessionId, `${intent.action}:memory`);
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "outbound_reply",
+          mode: voiceReply ? "voice" : "text",
+          text: memoryBackedText,
+          voiceMediaUrl: voiceReply?.mediaUrl,
+        }),
+      );
       return {
-        text: outcome.text,
+        text: memoryBackedText,
         replyMode,
+        voiceReply,
         outcome,
       };
+    }
+
+    await memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        type: "worker_task_start",
+        action: intent.action,
+        instruction: intent.instruction,
+      }),
+    );
+
+    const workerContext: OnCallWorkerContext = {
+      sessionId: boundSession.sessionId,
+      workerSessionId: boundSession.workerBinding.workerSessionId,
+      workspacePath: project.workspacePath,
+      containerId: project.containerId,
+      summary: memorySummary || boundSession.summary,
+      structuredState: memoryState,
+      onProgress: async (event) => {
+        await persistProgress({
+          memory,
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          sessions,
+          event,
+        });
+      },
+    };
+
+    let result: OnCallWorkerResult;
+    try {
+      result = await invokeWorker({
+        action: intent.action,
+        worker,
+        projectId: project.id,
+        text: intent.instruction,
+        context: workerContext,
+      });
+    } catch (error) {
+      const outcome: OnCallRouteOutcome = {
+        type: "worker_error",
+        replyMode,
+        text: `Worker execution failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        projectId: project.id,
+      };
+      await sessions.appendRecentAction(boundSession.sessionId, `worker_error:${intent.action}`);
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "worker_status_progress",
+          progress: {
+            atMs: Date.now(),
+            kind: "worker_error",
+            message: outcome.text,
+            phase: "blocked",
+            blockers: [outcome.text],
+          },
+        }),
+      );
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    for (const progressEvent of result.progressEvents ?? []) {
+      await persistProgress({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        sessions,
+        event: progressEvent,
+      });
+    }
+
+    await memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        type: "worker_summary",
+        text: result.text,
+      }),
+    );
+
+    if (result.summary) {
+      await memory.setSummary(boundSession.sessionId, result.summary, project.id);
+      await sessions.setSummary(boundSession.sessionId, result.summary);
+      await sessions.setStructuredState(boundSession.sessionId, {
+        lastWorkerAction: intent.action,
+      });
+    }
+
+    if (result.workerSessionId) {
+      await sessions.bindWorker(boundSession.sessionId, {
+        workerSessionId: result.workerSessionId,
+      });
+    }
+
+    await sessions.appendRecentAction(boundSession.sessionId, intent.action);
+
+    if ((result.progressEvents ?? []).length >= 6) {
+      await memory.compactSessionMemory(boundSession.sessionId, project.id);
+    }
+
+    const finalText = buildReply(result);
+    const voiceReply = await maybeSynthesizeVoiceReply({
+      responseText: finalText,
+      replyMode,
+      voice,
+      sessionId: boundSession.sessionId,
+      projectId: project.id,
+    });
+
+    const outcome: OnCallRouteOutcome = {
+      type: "success",
+      replyMode,
+      projectId: project.id,
+      projectName: project.name,
+      sessionId: boundSession.sessionId,
+      text: finalText,
+      execution: {
+        action: intent.action,
+        status: result.status,
+        source: "worker",
+      },
+      summary: result.summary,
+      voiceMediaUrl: voiceReply?.mediaUrl,
+    };
+
+    await memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        type: "router_decision",
+        outcomeType: outcome.type,
+        text: outcome.text,
+      }),
+    );
+
+    await memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        type: "outbound_reply",
+        mode: voiceReply ? "voice" : "text",
+        text: finalText,
+        voiceMediaUrl: voiceReply?.mediaUrl,
+      }),
+    );
+
+    return {
+      text: outcome.text,
+      replyMode,
+      voiceReply,
+      outcome,
+    };
+  }
+
+  return {
+    async processInbound(input) {
+      return await processNormalized({
+        ...input,
+        inputType: input.inputType ?? "text",
+      });
+    },
+
+    async processVoiceInbound(input) {
+      const chatId = input.chatId ?? input.sessionKey ?? input.userId;
+      const session = await sessions.getOrCreateSession(chatId, input.userId);
+      await memory.appendEvent(
+        createEvent({
+          atMs: input.timestampMs,
+          sessionId: session.sessionId,
+          projectId: session.activeProjectId ?? undefined,
+          type: "inbound_voice_message",
+          audioUrl: input.audioUrl,
+          userId: input.userId,
+          provider: "telegram",
+        }),
+      );
+
+      const transcript = input.transcript?.trim()
+        ? {
+            text: input.transcript.trim(),
+            provider: "telegram-transcript",
+          }
+        : await voice.transcribeAudio({
+            audioUrl: input.audioUrl ?? "unknown-audio",
+          });
+
+      await memory.appendEvent(
+        createEvent({
+          atMs: input.timestampMs,
+          sessionId: session.sessionId,
+          projectId: session.activeProjectId ?? undefined,
+          type: "inbound_voice_transcript",
+          text: transcript.text,
+          provider: transcript.provider,
+        }),
+      );
+
+      return await processNormalized({
+        ...input,
+        body: input.body ?? transcript.text,
+        transcript: transcript.text,
+        inputType: "voice",
+      });
     },
   };
 }

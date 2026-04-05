@@ -31,24 +31,39 @@ async function maybeDispatchOnCallDev(params: {
     return null;
   }
 
+  const userId = params.ctx.SenderId ?? params.ctx.From ?? "telegram-user";
   const body = params.ctx.BodyForCommands ?? params.ctx.CommandBody ?? params.ctx.Body;
-  if (!body?.trim()) {
+  const hasVoiceAttachment =
+    params.ctx.MediaType?.startsWith("audio/") === true ||
+    params.ctx.MediaTypes?.some((mediaType) => mediaType.startsWith("audio/")) === true;
+  if (!body?.trim() && !hasVoiceAttachment) {
     return null;
   }
 
-  const userId = params.ctx.SenderId ?? params.ctx.From ?? "telegram-user";
-  const response = await onCallRouter.processInbound({
-    channel: "telegram",
-    body,
-    userId,
-    sessionKey: params.ctx.SessionKey,
-    transcript: params.ctx.Transcript,
-    timestampMs: Date.now(),
-  });
+  const response =
+    body?.trim() || !hasVoiceAttachment
+      ? await onCallRouter.processInbound({
+          channel: "telegram",
+          body: body ?? "",
+          userId,
+          sessionKey: params.ctx.SessionKey,
+          transcript: params.ctx.Transcript,
+          timestampMs: Date.now(),
+        })
+      : await onCallRouter.processVoiceInbound({
+          channel: "telegram",
+          body: params.ctx.Transcript ?? "",
+          userId,
+          sessionKey: params.ctx.SessionKey,
+          transcript: params.ctx.Transcript,
+          audioUrl: params.ctx.MediaUrl ?? params.ctx.MediaUrls?.[0],
+          timestampMs: Date.now(),
+        });
 
   const payload: ReplyPayload = {
     text: response.text,
     audioAsVoice: response.replyMode === "voice",
+    mediaUrl: response.voiceReply?.mediaUrl,
   };
   await params.dispatcherOptions.deliver(payload, { kind: "final" });
 
