@@ -1,4 +1,5 @@
 import type { OnCallAction, OnCallWorkerProgressEvent, OnCallWorkerResult } from "../types.js";
+import type { OnCallExecutionProfile } from "../types.js";
 
 export type OnCallWorkerContext = {
   projectId?: string;
@@ -8,6 +9,16 @@ export type OnCallWorkerContext = {
   containerId?: string | null;
   containerName?: string | null;
   runtimeFamily?: string | null;
+  executionProfile?: OnCallExecutionProfile;
+  repoMetadata?: {
+    repoUrl: string | null;
+    repoStatus: string;
+    branch: string | null;
+  };
+  bootstrapState?: {
+    bootstrapStatus: string;
+    bootstrapError: string | null;
+  };
   summary?: string;
   structuredState?: Record<string, unknown>;
   onProgress?: (event: OnCallWorkerProgressEvent) => Promise<void> | void;
@@ -43,6 +54,9 @@ type OpenHandsPayload = {
   containerId?: string | null;
   containerName?: string | null;
   runtimeFamily?: string | null;
+  executionProfile?: OnCallExecutionProfile;
+  repoMetadata?: Record<string, unknown>;
+  bootstrapState?: Record<string, unknown>;
   summary?: string;
   structuredState?: Record<string, unknown>;
   llmBaseUrl?: string;
@@ -89,6 +103,9 @@ function buildPayload(
     containerId: context?.containerId,
     containerName: context?.containerName,
     runtimeFamily: context?.runtimeFamily,
+    executionProfile: context?.executionProfile,
+    repoMetadata: context?.repoMetadata,
+    bootstrapState: context?.bootstrapState,
     summary: context?.summary,
     structuredState: context?.structuredState,
     llmBaseUrl: cfg.llmBaseUrl,

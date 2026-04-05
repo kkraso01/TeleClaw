@@ -73,3 +73,7 @@ Compaction prioritizes preserving goal, blockers, changes, test state, and next 
 ## Runtime lifecycle events
 
 TeleClaw now persists runtime lifecycle events (`runtime.ensure_requested`, `runtime.started`, `runtime.reused`, `runtime.stopped`, `runtime.restarted`, `runtime.validation_failed`, `runtime.error`) in the same durable event model used for routing and worker traces.
+
+## Additional durable events
+
+Memory now persists bootstrap, repo lifecycle, and execution stage events (for example `project.created`, `repo.inspected`, `execution.test_finished`).

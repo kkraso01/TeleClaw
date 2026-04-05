@@ -3,10 +3,13 @@ import { createOnCallMemoryStore, type OnCallMemoryStore } from "../memory/index
 import {
   canAttachRuntime,
   canBindProject,
+  canBootstrapProject,
   canStartRuntime,
   explainPolicyFailure,
   explainRuntimePolicyFailure,
   requireExecutionContext,
+  validateProjectCreationInput,
+  validateRepoUrl,
   validateWorkspacePath,
 } from "../policy/index.js";
 import { createOnCallProjectRegistry, type OnCallProjectRegistry } from "../projects/index.js";
@@ -71,11 +74,11 @@ function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" 
   return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
 }
 
-function createEvent<TEvent extends OnCallMemoryEvent>(event: Omit<TEvent, "id">): TEvent {
+function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
   return {
     ...event,
     id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
-  } as TEvent;
+  };
 }
 
 function resolveRuntimeIntent(instruction: string): RuntimeIntent {
@@ -93,6 +96,38 @@ function resolveRuntimeIntent(instruction: string): RuntimeIntent {
     return "status";
   }
   return null;
+}
+
+function normalizeProjectId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function parseProjectCreationIntent(
+  instruction: string,
+): { runtimeFamily: string; name: string } | null {
+  const match = instruction
+    .trim()
+    .match(/^create (?:a )?new (python|node|generic|typescript|javascript) project called (.+)$/i);
+  if (!match) {
+    return null;
+  }
+  const familyRaw = match[1]?.toLowerCase() ?? "generic";
+  const runtimeFamily =
+    familyRaw === "typescript" || familyRaw === "javascript"
+      ? "node"
+      : familyRaw === "python"
+        ? "python"
+        : familyRaw;
+  return { runtimeFamily, name: match[2]?.trim() ?? "" };
+}
+
+function parseRepoUrl(instruction: string): string | null {
+  const match = instruction.match(/(https?:\/\/\S+|git@\S+)/i);
+  return match?.[1] ?? null;
 }
 
 async function maybeSynthesizeVoiceReply(params: {
@@ -215,6 +250,21 @@ async function persistProgress(params: {
   sessions: OnCallSessionManager;
   event: OnCallWorkerProgressEvent;
 }): Promise<void> {
+  const inferredInstallStatus =
+    params.event.kind === "dependency_install"
+      ? "running"
+      : params.event.kind === "worker_error"
+        ? "failed"
+        : undefined;
+  const inferredTestStatus =
+    params.event.kind === "testing_started"
+      ? "running"
+      : params.event.kind === "tests_passed"
+        ? "passed"
+        : params.event.kind === "tests_failed"
+          ? "failed"
+          : undefined;
+
   await params.memory.appendEvent(
     createEvent({
       atMs: params.event.atMs,
@@ -235,6 +285,12 @@ async function persistProgress(params: {
     testsPassing: params.event.testsPassing,
     testsFailing: params.event.testsFailing,
     blockers: params.event.blockers,
+    installStatus: inferredInstallStatus,
+    lastTestRunStatus: inferredTestStatus,
+    currentBlocker: params.event.blockers?.[0],
+    filesChangedSummary: params.event.filesChanged?.length
+      ? `${params.event.filesChanged.length} file(s) changed`
+      : undefined,
   });
 }
 
@@ -264,6 +320,102 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         userId: input.userId,
       }),
     );
+
+    const projectCreateIntent = parseProjectCreationIntent(intent.instruction);
+    if (projectCreateIntent) {
+      const workspaceRoot = process.env.PROJECTS_ROOT ?? `${process.cwd()}/workspace`;
+      const projectId = normalizeProjectId(projectCreateIntent.name);
+      const workspacePath = `${workspaceRoot}/${projectId}`;
+      const createPolicy = validateProjectCreationInput({
+        name: projectCreateIntent.name,
+        workspacePath,
+      });
+      if (createPolicy) {
+        const text = explainPolicyFailure(createPolicy);
+        await memory.appendEvent(
+          createEvent({
+            atMs: Date.now(),
+            sessionId: session.sessionId,
+            type: "policy_block",
+            code: createPolicy.code,
+            message: createPolicy.message,
+          }),
+        );
+        return {
+          text,
+          replyMode,
+          outcome: {
+            type: "blocked_by_policy",
+            replyMode,
+            text,
+            policy: createPolicy,
+          },
+        };
+      }
+
+      const created = await projects.createProject({
+        id: projectId,
+        name: projectCreateIntent.name,
+        aliases: [projectCreateIntent.name],
+        language: projectCreateIntent.runtimeFamily === "python" ? "py" : "ts",
+        workspacePath,
+        containerId: null,
+        runtimeFamily: projectCreateIntent.runtimeFamily,
+        defaultReplyMode: replyMode,
+        status: "active",
+      });
+      const bootstrapped = await projects.bootstrapProject(created.id, {
+        createWorkspace: true,
+        detectRuntimeFamily: true,
+        initRepoIfMissing: false,
+      });
+
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: created.id,
+          type: "teleclaw_event",
+          eventType: "project.created",
+          message: `Created project ${created.name}`,
+          details: {
+            projectId: created.id,
+            runtimeFamily: created.runtimeFamily,
+          },
+        }),
+      );
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: created.id,
+          type: "teleclaw_event",
+          eventType: "project.bootstrapped",
+          message: `Bootstrapped project ${created.name}`,
+        }),
+      );
+      await sessions.bindProject(session.sessionId, created.id);
+      await projects.rememberActiveProject(chatId, created.id);
+      const active = bootstrapped ?? created;
+      const text = `Created and bootstrapped project ${active.name} (${active.id}) at ${active.workspacePath}. Runtime family: ${active.runtimeFamily ?? "generic"}.`;
+      return {
+        text,
+        replyMode,
+        outcome: {
+          type: "success",
+          replyMode,
+          projectId: active.id,
+          projectName: active.name,
+          sessionId: session.sessionId,
+          text,
+          execution: {
+            action: "task",
+            status: "ok",
+            source: "runtime",
+          },
+        },
+      };
+    }
 
     await memory.appendEvent(
       createEvent({
@@ -439,6 +591,160 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     await projects.rememberActiveProject(chatId, project.id);
 
     const refreshedProject = (await projects.getProjectById(project.id)) ?? project;
+
+    const lowerInstruction = intent.instruction.toLowerCase();
+    if (lowerInstruction.includes("bootstrap")) {
+      const bootstrapPolicy = canBootstrapProject(refreshedProject);
+      if (bootstrapPolicy) {
+        const text = explainPolicyFailure(bootstrapPolicy);
+        return {
+          text,
+          replyMode,
+          outcome: {
+            type: "blocked_by_policy",
+            replyMode,
+            text,
+            projectId: refreshedProject.id,
+            policy: bootstrapPolicy,
+          },
+        };
+      }
+      const bootstrapped = await projects.bootstrapProject(refreshedProject.id, {
+        createWorkspace: true,
+        detectRuntimeFamily: true,
+        initRepoIfMissing: false,
+      });
+      const text = bootstrapped
+        ? `Bootstrap ${bootstrapped.bootstrapStatus} for ${bootstrapped.name}. Repo status: ${bootstrapped.repoStatus}.`
+        : `Unable to bootstrap ${refreshedProject.name}.`;
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: refreshedProject.id,
+          type: "teleclaw_event",
+          eventType: "project.bootstrapped",
+          message: text,
+        }),
+      );
+      return {
+        text,
+        replyMode,
+        outcome: {
+          type: "success",
+          replyMode,
+          projectId: refreshedProject.id,
+          projectName: refreshedProject.name,
+          sessionId: boundSession.sessionId,
+          text,
+          execution: {
+            action: "task",
+            status: bootstrapped?.bootstrapStatus === "error" ? "error" : "ok",
+            source: "runtime",
+          },
+        },
+      };
+    }
+
+    if (lowerInstruction.includes("clone") && lowerInstruction.includes("repo")) {
+      const repoUrl = parseRepoUrl(intent.instruction);
+      if (!repoUrl) {
+        return {
+          text: "Please provide a repository URL to clone.",
+          replyMode,
+          outcome: {
+            type: "worker_error",
+            replyMode,
+            text: "Repository URL missing.",
+            projectId: refreshedProject.id,
+          },
+        };
+      }
+      const repoPolicy = validateRepoUrl(repoUrl);
+      if (repoPolicy) {
+        const text = explainPolicyFailure(repoPolicy);
+        return {
+          text,
+          replyMode,
+          outcome: {
+            type: "blocked_by_policy",
+            replyMode,
+            text,
+            projectId: refreshedProject.id,
+            policy: repoPolicy,
+          },
+        };
+      }
+      const bootstrapped = await projects.bootstrapProject(refreshedProject.id, {
+        createWorkspace: true,
+        detectRuntimeFamily: true,
+        repoUrl,
+        cloneRepo: true,
+      });
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: refreshedProject.id,
+          type: "teleclaw_event",
+          eventType: "repo.cloned",
+          message: `Cloned ${repoUrl}`,
+        }),
+      );
+      const text = bootstrapped
+        ? `Cloned repo into ${bootstrapped.name}. Branch: ${bootstrapped.branch ?? "unknown"}.`
+        : "Repo clone failed.";
+      return {
+        text,
+        replyMode,
+        outcome: {
+          type: "success",
+          replyMode,
+          projectId: refreshedProject.id,
+          projectName: refreshedProject.name,
+          sessionId: boundSession.sessionId,
+          text,
+          execution: {
+            action: "task",
+            status: bootstrapped?.repoStatus === "error" ? "error" : "ok",
+            source: "runtime",
+          },
+        },
+      };
+    }
+
+    if (/what branch|repo clean|repo status|is .* repo clean/.test(lowerInstruction)) {
+      const refreshed = await projects.refreshProjectRepoState(refreshedProject.id);
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: refreshedProject.id,
+          type: "teleclaw_event",
+          eventType: "repo.inspected",
+          message: "Repo state inspected.",
+        }),
+      );
+      const target = refreshed ?? refreshedProject;
+      const text = `Repo status for ${target.name}: ${target.repoStatus}. Branch: ${target.branch ?? "unknown"}.`;
+      return {
+        text,
+        replyMode,
+        outcome: {
+          type: "success",
+          replyMode,
+          projectId: target.id,
+          projectName: target.name,
+          sessionId: boundSession.sessionId,
+          text,
+          execution: {
+            action: "status",
+            status: "ok",
+            source: "runtime",
+          },
+        },
+      };
+    }
 
     const runtimeStartPolicy = canStartRuntime(project);
     if (runtimeStartPolicy) {
@@ -782,6 +1088,16 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       containerId: validation.status.containerId,
       containerName: validation.status.containerName,
       runtimeFamily: validation.status.runtimeFamily,
+      executionProfile: runtimeProject.executionProfile,
+      repoMetadata: {
+        repoUrl: runtimeProject.repoUrl,
+        repoStatus: runtimeProject.repoStatus,
+        branch: runtimeProject.branch,
+      },
+      bootstrapState: {
+        bootstrapStatus: runtimeProject.bootstrapStatus,
+        bootstrapError: runtimeProject.bootstrapError,
+      },
       summary: memorySummary || boundSession.summary,
       structuredState: memoryState,
       onProgress: async (event) => {
@@ -796,7 +1112,58 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     };
 
     let result: OnCallWorkerResult;
+    const normalizedInstruction = intent.instruction.toLowerCase();
+    if (/\binstall\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.install_started",
+          message: "Install requested.",
+          details: {
+            command: runtimeProject.executionProfile.installCommand,
+          },
+        }),
+      );
+      await sessions.setStructuredState(boundSession.sessionId, { installStatus: "running" });
+    }
+    if (/\btest(s)?\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.test_started",
+          message: "Test run requested.",
+          details: {
+            command: runtimeProject.executionProfile.testCommand,
+          },
+        }),
+      );
+      await sessions.setPhase(boundSession.sessionId, "testing");
+      await sessions.setStructuredState(boundSession.sessionId, { lastTestRunStatus: "running" });
+    }
+    if (/\bbuild\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.build_started",
+          message: "Build requested.",
+          details: {
+            command: runtimeProject.executionProfile.buildCommand,
+          },
+        }),
+      );
+      await sessions.setStructuredState(boundSession.sessionId, { lastBuildStatus: "running" });
+    }
     try {
+      await sessions.setPhase(boundSession.sessionId, "planning");
       result = await invokeWorker({
         action: intent.action,
         worker,
@@ -804,6 +1171,19 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         text: intent.instruction,
         context: workerContext,
       });
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.test_finished",
+          message: "Worker execution finished.",
+          details: {
+            status: result.status,
+          },
+        }),
+      );
     } catch (error) {
       const outcome: OnCallRouteOutcome = {
         type: "worker_error",
@@ -840,6 +1220,52 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       });
     }
 
+    if (/\binstall\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.install_finished",
+          message: `Install finished with status ${result.status}.`,
+        }),
+      );
+      await sessions.setStructuredState(boundSession.sessionId, {
+        installStatus: result.status === "ok" ? "passed" : "failed",
+      });
+    }
+    if (/\btest(s)?\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.test_finished",
+          message: `Tests finished with status ${result.status}.`,
+        }),
+      );
+      await sessions.setStructuredState(boundSession.sessionId, {
+        lastTestRunStatus: result.status === "ok" ? "passed" : "failed",
+      });
+    }
+    if (/\bbuild\b/.test(normalizedInstruction)) {
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: boundSession.sessionId,
+          projectId: project.id,
+          type: "teleclaw_event",
+          eventType: "execution.build_finished",
+          message: `Build finished with status ${result.status}.`,
+        }),
+      );
+      await sessions.setStructuredState(boundSession.sessionId, {
+        lastBuildStatus: result.status === "ok" ? "passed" : "failed",
+      });
+    }
+
     await memory.appendEvent(
       createEvent({
         atMs: Date.now(),
@@ -855,6 +1281,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       await sessions.setSummary(boundSession.sessionId, result.summary);
       await sessions.setStructuredState(boundSession.sessionId, {
         lastWorkerAction: intent.action,
+        lastSummarizedOutput: result.summary,
       });
     }
 
@@ -871,6 +1298,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     }
 
     const finalText = buildReply(result);
+    await sessions.setPhase(boundSession.sessionId, "reporting");
     const voiceReply = await maybeSynthesizeVoiceReply({
       responseText: finalText,
       replyMode,

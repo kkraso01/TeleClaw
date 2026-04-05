@@ -34,6 +34,8 @@ describe("createOnCallProjectRegistry", () => {
     });
 
     expect(created.aliases).toContain("billing");
+    expect(created.bootstrapStatus).toBe("uninitialized");
+    expect(created.executionProfile.testCommand.length).toBeGreaterThan(0);
 
     const reloaded = createOnCallProjectRegistry({
       storePath: path.join(tmpDir, "projects.json"),
@@ -113,11 +115,56 @@ describe("createOnCallProjectRegistry", () => {
         runtimeError: null,
         workspaceBootstrappedAt: null,
         workspaceBootstrapError: null,
+        bootstrapStatus: "uninitialized",
+        bootstrapError: null,
+        repoUrl: null,
+        repoStatus: "missing",
+        branch: null,
+        lastRepoSyncAt: null,
+        repoError: null,
+        executionProfile: {
+          installCommand: "npm install",
+          testCommand: "npm test",
+          lintCommand: "npm run lint",
+          buildCommand: "npm run build",
+          runCommand: "npm run dev",
+          packageManager: "npm",
+          preferredShell: "bash",
+        },
       },
       { createIfMissing: true },
     );
     expect(result.ok).toBe(true);
     expect(result.createdWorkspace).toBe(true);
+  });
+
+  it("bootstraps project metadata and repo state", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-projects-"));
+    vi.stubEnv("PROJECTS_ROOT", tmpDir);
+    const registry = createOnCallProjectRegistry({
+      storePath: path.join(tmpDir, "projects.json"),
+      projectsRoot: tmpDir,
+      additionalAllowedRoots: [],
+    });
+    await registry.createProject({
+      id: "scraper",
+      name: "Scraper",
+      aliases: ["scraper"],
+      language: "py",
+      workspacePath: path.join(tmpDir, "scraper"),
+      containerId: null,
+      runtimeFamily: "python",
+      defaultReplyMode: "text",
+      status: "active",
+    });
+
+    const bootstrapped = await registry.bootstrapProject("scraper", {
+      createWorkspace: true,
+      detectRuntimeFamily: true,
+      initRepoIfMissing: false,
+    });
+    expect(bootstrapped?.bootstrapStatus).toBe("ready");
+    expect(["missing", "error", "clean", "dirty"]).toContain(bootstrapped?.repoStatus);
   });
 
   it("detects runtime family from workspace hints", async () => {
@@ -143,6 +190,22 @@ describe("createOnCallProjectRegistry", () => {
       runtimeError: null,
       workspaceBootstrappedAt: null,
       workspaceBootstrapError: null,
+      bootstrapStatus: "uninitialized",
+      bootstrapError: null,
+      repoUrl: null,
+      repoStatus: "missing",
+      branch: null,
+      lastRepoSyncAt: null,
+      repoError: null,
+      executionProfile: {
+        installCommand: "npm install",
+        testCommand: "npm test",
+        lintCommand: "npm run lint",
+        buildCommand: "npm run build",
+        runCommand: "npm run dev",
+        packageManager: "npm",
+        preferredShell: "bash",
+      },
     });
     expect(runtimeFamily).toBe("python");
   });

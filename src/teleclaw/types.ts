@@ -23,6 +23,31 @@ export type OnCallInput = {
 
 export type OnCallProjectStatus = "active" | "paused" | "archived";
 export type OnCallRuntimeStatus = "unbound" | "starting" | "running" | "stopped" | "error";
+export type OnCallBootstrapStatus = "uninitialized" | "bootstrapping" | "ready" | "error";
+export type OnCallRepoStatus = "missing" | "present" | "dirty" | "clean" | "error";
+
+export type OnCallExecutionProfile = {
+  installCommand: string;
+  testCommand: string;
+  lintCommand: string;
+  buildCommand: string;
+  runCommand: string;
+  packageManager: "npm" | "pnpm" | "yarn" | "uv" | "pip" | "generic";
+  preferredShell: string;
+};
+
+export type OnCallProjectRepoState = {
+  repoUrl: string | null;
+  repoStatus: OnCallRepoStatus;
+  branch: string | null;
+  lastRepoSyncAt: string | null;
+  repoError: string | null;
+};
+
+export type OnCallProjectBootstrapState = OnCallProjectRepoState & {
+  bootstrapStatus: OnCallBootstrapStatus;
+  bootstrapError: string | null;
+};
 
 export type OnCallProject = {
   id: string;
@@ -43,6 +68,14 @@ export type OnCallProject = {
   runtimeError: string | null;
   workspaceBootstrappedAt: string | null;
   workspaceBootstrapError: string | null;
+  bootstrapStatus: OnCallBootstrapStatus;
+  bootstrapError: string | null;
+  repoUrl: string | null;
+  repoStatus: OnCallRepoStatus;
+  branch: string | null;
+  lastRepoSyncAt: string | null;
+  repoError: string | null;
+  executionProfile: OnCallExecutionProfile;
   description?: string;
   tags?: string[];
   allowedMounts?: string[];
@@ -102,6 +135,12 @@ export type OnCallStructuredState = {
   testsPassing: string[];
   testsFailing: string[];
   blockers: string[];
+  installStatus?: "unknown" | "running" | "passed" | "failed";
+  lastTestRunStatus?: "unknown" | "running" | "passed" | "failed";
+  lastBuildStatus?: "unknown" | "running" | "passed" | "failed";
+  filesChangedSummary?: string;
+  lastSummarizedOutput?: string;
+  currentBlocker?: string;
   lastWorkerAction?: string;
   nextSuggestedStep?: string;
   lastCompactedAt?: string;
@@ -151,6 +190,21 @@ export type OnCallRuntimeEventType =
   | "runtime.bootstrap_failed"
   | "runtime.validation_failed"
   | "runtime.error";
+
+export type OnCallExecutionEventType =
+  | "project.created"
+  | "project.bootstrapped"
+  | "repo.cloned"
+  | "repo.initialized"
+  | "repo.inspected"
+  | "repo.sync_requested"
+  | "execution.install_started"
+  | "execution.install_finished"
+  | "execution.test_started"
+  | "execution.test_finished"
+  | "execution.build_started"
+  | "execution.build_finished"
+  | "execution.blocked";
 
 export type OnCallMemoryEvent =
   | {
@@ -222,6 +276,16 @@ export type OnCallMemoryEvent =
       containerId?: string | null;
       containerName?: string | null;
       message: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
+      type: "teleclaw_event";
+      eventType: OnCallExecutionEventType;
+      message: string;
+      details?: Record<string, unknown>;
     }
   | {
       id: string;
@@ -309,7 +373,11 @@ export type OnCallPolicyErrorCode =
   | "workspace_disallowed"
   | "project_archived"
   | "project_paused"
+  | "project_name_invalid"
+  | "workspace_name_invalid"
   | "mount_disallowed"
+  | "repo_url_invalid"
+  | "repo_action_disallowed"
   | "project_required"
   | "runtime_family_disallowed"
   | "runtime_attach_failed"

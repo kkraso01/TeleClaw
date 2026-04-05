@@ -99,6 +99,52 @@ export function canExecuteProject(project: OnCallProject): OnCallPolicyError | n
   return null;
 }
 
+const safeWorkspaceNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,80}$/;
+
+export function validateProjectCreationInput(params: {
+  name: string;
+  workspacePath: string;
+}): OnCallPolicyError | null {
+  if (!params.name.trim()) {
+    return makeError("project_name_invalid", "Project name cannot be empty.");
+  }
+  const rawSegments = params.workspacePath.split(/[\\/]+/).filter(Boolean);
+  if (rawSegments.includes("..")) {
+    return makeError("workspace_name_invalid", "Workspace path cannot include parent traversal.", {
+      workspacePath: params.workspacePath,
+    });
+  }
+  const workspaceName = path.basename(path.resolve(params.workspacePath));
+  if (!safeWorkspaceNamePattern.test(workspaceName)) {
+    return makeError(
+      "workspace_name_invalid",
+      "Workspace folder name contains unsafe characters.",
+      { workspaceName },
+    );
+  }
+  return null;
+}
+
+export function validateRepoUrl(repoUrl: string): OnCallPolicyError | null {
+  const trimmed = repoUrl.trim();
+  const httpUrl = /^https?:\/\/[a-zA-Z0-9._:@/-]+(\.git)?$/i;
+  const sshUrl = /^git@[a-zA-Z0-9._-]+:[a-zA-Z0-9._/-]+(\.git)?$/i;
+  if (!httpUrl.test(trimmed) && !sshUrl.test(trimmed)) {
+    return makeError("repo_url_invalid", "Repository URL format is invalid.", {
+      repoUrl: trimmed,
+    });
+  }
+  return null;
+}
+
+export function canBootstrapProject(project: OnCallProject): OnCallPolicyError | null {
+  const executionPolicy = canExecuteProject(project);
+  if (executionPolicy) {
+    return executionPolicy;
+  }
+  return validateWorkspacePath(project);
+}
+
 export function canBindProject(
   _session: { activeProjectId: string | null },
   project: OnCallProject,
