@@ -9,36 +9,45 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 ## New module boundaries
 
 - `src/teleclaw/intent`: natural-language intent resolution (action, project, reply mode).
-- `src/teleclaw/projects`: project lookup and one-project-per-container mapping.
-- `src/teleclaw/sessions`: session state binding (`session -> project`).
+- `src/teleclaw/projects`: persistent project registry and safe project resolution.
+- `src/teleclaw/sessions`: durable session binding (`chat/session -> active project -> worker context`).
 - `src/teleclaw/memory`: event log + rolling summary + structured state + durable facts.
-- `src/teleclaw/worker/adapter.ts`: OpenHands adapter (`runTask`, `resume`, `getStatus`, `summarize`).
+- `src/teleclaw/worker/adapter.ts`: OpenHands adapter (`runTask`, `resume`, `getStatus`, `summarize`) with project context payloads.
 - `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime.
-- `src/teleclaw/router`: core request flow orchestration.
-- `src/teleclaw/policy`: boundary enforcement for project isolation.
+- `src/teleclaw/router`: enforcing orchestration for intent, session/project binding, policy checks, and worker execution.
+- `src/teleclaw/policy`: boundary enforcement for project isolation and execution safety.
 
 ## Inbound flow
 
 1. Telegram message enters existing OpenClaw channel pipeline.
 2. `dispatchReplyWithBufferedBlockDispatcher` gates to OnCallDev when `ONCALLDEV_ENABLED=1` on Telegram contexts.
-3. Router resolves intent, project, session, and policy.
-4. OpenHands adapter executes work against the selected isolated project.
-5. Memory state appends raw events and updates summary on summarize operations.
-6. Final response returns to Telegram via the existing channel delivery path.
+3. Router resolves intent and durable session.
+4. Router resolves/validates project context and applies policy checks.
+5. OpenHands adapter executes work against the selected isolated project context.
+6. Session/memory state updates are persisted.
+7. Final response returns to Telegram via the existing channel delivery path.
 
 ## Configuration
 
 - `ONCALLDEV_ENABLED=1` toggles OnCallDev routing.
-- `ONCALLDEV_PROJECTS_JSON` sets project registry and isolation mapping.
-- `ONCALLDEV_DEFAULT_PROJECT_ID` selects fallback project.
-- `ONCALLDEV_OPENHANDS_BASE_URL` targets the OpenHands worker service.
+- `TELECLAW_DATA_DIR` sets the base state directory for TeleClaw stores.
+- `TELECLAW_PROJECTS_STORE_PATH` overrides project registry path.
+- `TELECLAW_SESSIONS_STORE_PATH` overrides session store path.
+- `PROJECTS_ROOT` sets the default allowed workspace root.
+- `ALLOWED_PROJECT_MOUNTS` adds extra comma-separated allowed roots.
+- `OPENHANDS_ENDPOINT` targets the OpenHands worker service.
 - `ONCALLDEV_OPENHANDS_API_KEY` optional bearer token.
-- `ONCALLDEV_OPENAI_BASE_URL` custom OpenAI-compatible endpoint passed through the worker adapter.
-- `ONCALLDEV_MODEL` model hint passed through the worker adapter.
+- `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` are forwarded to worker runtime payloads.
+- `DEFAULT_REPLY_MODE` can be used by project defaults and reply formatting policy.
+
+## Additional docs
+
+- [Project routing](/oncalldev-project-routing)
+- [Session model](/oncalldev-session-model)
 
 ## Known MVP TODOs
 
-- Replace in-memory session and memory stores with persistent storage.
+- Replace file-backed project/session stores with SQLite when migration and deploy footprint are acceptable.
 - Implement real Telegram voice-note STT and optional TTS output wiring.
 - Add explicit project authorization policy per Telegram user.
 - Add health probes for OpenHands project containers.

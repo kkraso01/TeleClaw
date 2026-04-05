@@ -5,6 +5,7 @@ export type {
   OnCallIntent,
   OnCallMemoryState,
   OnCallProject,
+  OnCallRouteOutcome,
   OnCallSessionState,
   OnCallWorkerResult,
 } from "./types.js";

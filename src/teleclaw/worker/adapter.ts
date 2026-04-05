@@ -1,25 +1,56 @@
-import type { OnCallWorkerResult } from "../types.js";
+import type { OnCallAction, OnCallWorkerResult } from "../types.js";
+
+export type OnCallWorkerContext = {
+  sessionId?: string;
+  workerSessionId?: string | null;
+  workspacePath?: string;
+  containerId?: string | null;
+  summary?: string;
+  structuredState?: Record<string, unknown>;
+};
 
 type OpenHandsAdapterConfig = {
   baseUrl: string;
   apiKey?: string;
-  openaiBaseUrl?: string;
+  llmBaseUrl?: string;
+  llmApiKey?: string;
   model?: string;
+  fetchImpl?: typeof fetch;
 };
 
 export type OpenHandsAdapter = {
-  runTask: (projectId: string, instruction: string) => Promise<OnCallWorkerResult>;
-  resume: (projectId: string) => Promise<OnCallWorkerResult>;
-  getStatus: (projectId: string) => Promise<OnCallWorkerResult>;
-  summarize: (projectId: string) => Promise<OnCallWorkerResult>;
+  runTask: (
+    projectId: string,
+    instruction: string,
+    context?: OnCallWorkerContext,
+  ) => Promise<OnCallWorkerResult>;
+  resume: (projectId: string, context?: OnCallWorkerContext) => Promise<OnCallWorkerResult>;
+  getStatus: (projectId: string, context?: OnCallWorkerContext) => Promise<OnCallWorkerResult>;
+  summarize: (projectId: string, context?: OnCallWorkerContext) => Promise<OnCallWorkerResult>;
+};
+
+type OpenHandsPayload = {
+  projectId: string;
+  action: OnCallAction;
+  instruction?: string;
+  sessionId?: string;
+  workerSessionId?: string | null;
+  workspacePath?: string;
+  containerId?: string | null;
+  summary?: string;
+  structuredState?: Record<string, unknown>;
+  llmBaseUrl?: string;
+  llmApiKey?: string;
+  model?: string;
 };
 
 async function postAdapterRequest<T>(
   cfg: OpenHandsAdapterConfig,
   path: string,
-  body: Record<string, unknown>,
+  body: OpenHandsPayload,
 ): Promise<T> {
-  const response = await fetch(new URL(path, cfg.baseUrl), {
+  const fetchImpl = cfg.fetchImpl ?? fetch;
+  const response = await fetchImpl(new URL(path, cfg.baseUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -35,35 +66,58 @@ async function postAdapterRequest<T>(
   return (await response.json()) as T;
 }
 
-export function createOpenHandsAdapter(cfg: OpenHandsAdapterConfig): OpenHandsAdapter {
-  const shared = {
-    openaiBaseUrl: cfg.openaiBaseUrl,
+function buildPayload(
+  cfg: OpenHandsAdapterConfig,
+  action: OnCallAction,
+  projectId: string,
+  context: OnCallWorkerContext | undefined,
+  instruction?: string,
+): OpenHandsPayload {
+  return {
+    action,
+    projectId,
+    instruction,
+    sessionId: context?.sessionId,
+    workerSessionId: context?.workerSessionId,
+    workspacePath: context?.workspacePath,
+    containerId: context?.containerId,
+    summary: context?.summary,
+    structuredState: context?.structuredState,
+    llmBaseUrl: cfg.llmBaseUrl,
+    llmApiKey: cfg.llmApiKey,
     model: cfg.model,
   };
+}
 
+export function createOpenHandsAdapter(cfg: OpenHandsAdapterConfig): OpenHandsAdapter {
   return {
-    async runTask(projectId, instruction) {
-      return await postAdapterRequest<OnCallWorkerResult>(cfg, "/tasks/run", {
-        projectId,
-        instruction,
-        ...shared,
-      });
+    async runTask(projectId, instruction, context) {
+      return await postAdapterRequest<OnCallWorkerResult>(
+        cfg,
+        "/tasks/run",
+        buildPayload(cfg, "task", projectId, context, instruction),
+      );
     },
-    async resume(projectId) {
-      return await postAdapterRequest<OnCallWorkerResult>(cfg, "/tasks/resume", {
-        projectId,
-        ...shared,
-      });
+    async resume(projectId, context) {
+      return await postAdapterRequest<OnCallWorkerResult>(
+        cfg,
+        "/tasks/resume",
+        buildPayload(cfg, "resume", projectId, context),
+      );
     },
-    async getStatus(projectId) {
-      return await postAdapterRequest<OnCallWorkerResult>(cfg, "/tasks/status", {
-        projectId,
-      });
+    async getStatus(projectId, context) {
+      return await postAdapterRequest<OnCallWorkerResult>(
+        cfg,
+        "/tasks/status",
+        buildPayload(cfg, "status", projectId, context),
+      );
     },
-    async summarize(projectId) {
-      return await postAdapterRequest<OnCallWorkerResult>(cfg, "/tasks/summarize", {
-        projectId,
-      });
+    async summarize(projectId, context) {
+      return await postAdapterRequest<OnCallWorkerResult>(
+        cfg,
+        "/tasks/summarize",
+        buildPayload(cfg, "summarize", projectId, context),
+      );
     },
   };
 }
