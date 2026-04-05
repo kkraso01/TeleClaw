@@ -7,7 +7,7 @@ type OnCallMemoryEvent = {
 };
 
 export type OnCallMemoryStore = {
-  read: (sessionKey: string) => OnCallMemoryState;
+  read: (sessionId: string) => OnCallMemoryState;
   appendEvent: (session: OnCallSessionState, event: OnCallMemoryEvent) => void;
   updateSummary: (session: OnCallSessionState, summary: string) => void;
 };
@@ -23,9 +23,9 @@ export function createOnCallMemoryStore(): OnCallMemoryStore {
   const state = new Map<string, OnCallMemoryState>();
 
   return {
-    read: (sessionKey) => state.get(sessionKey) ?? EMPTY_MEMORY,
+    read: (sessionId) => state.get(sessionId) ?? EMPTY_MEMORY,
     appendEvent: (session, event) => {
-      const key = session.sessionKey;
+      const key = session.sessionId;
       const sessionEvents = events.get(key) ?? [];
       sessionEvents.push(event);
       events.set(key, sessionEvents);
@@ -33,20 +33,20 @@ export function createOnCallMemoryStore(): OnCallMemoryStore {
         state.set(key, {
           rollingSummary: "",
           structuredState: {
-            projectId: session.projectId,
+            activeProjectId: session.activeProjectId,
           },
           durableFacts: { pinnedNotes: [] },
         });
       }
     },
     updateSummary: (session, summary) => {
-      const memory = state.get(session.sessionKey) ?? {
+      const memory = state.get(session.sessionId) ?? {
         ...EMPTY_MEMORY,
-        structuredState: { projectId: session.projectId },
+        structuredState: { activeProjectId: session.activeProjectId },
       };
       memory.rollingSummary = summary;
       memory.structuredState.lastSummarizedAt = new Date().toISOString();
-      state.set(session.sessionKey, memory);
+      state.set(session.sessionId, memory);
     },
   };
 }
