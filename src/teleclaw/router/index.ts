@@ -174,11 +174,13 @@ function createRuntimeStatusText(params: {
   containerId: string | null;
   containerName: string | null;
   runtimeFamily: string | null;
+  runtimeError?: string;
 }): string {
   const containerLine = params.containerId
     ? `Container: ${params.containerName ?? "(unnamed)"} [${params.containerId}]`
     : "Container: unbound";
-  return `${params.projectName} runtime is ${params.status}. ${containerLine}. Runtime family: ${params.runtimeFamily ?? "unknown"}.`;
+  const errorLine = params.runtimeError ? ` Last error: ${params.runtimeError}.` : "";
+  return `${params.projectName} runtime is ${params.status}. ${containerLine}. Runtime family: ${params.runtimeFamily ?? "unknown"}.${errorLine}`;
 }
 
 async function persistRuntimeEvent(params: {
@@ -436,6 +438,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
 
     await projects.rememberActiveProject(chatId, project.id);
 
+    const refreshedProject = (await projects.getProjectById(project.id)) ?? project;
+
     const runtimeStartPolicy = canStartRuntime(project);
     if (runtimeStartPolicy) {
       const outcome: OnCallRouteOutcome = {
@@ -462,16 +466,88 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       memory,
       sessionId: boundSession.sessionId,
       projectId: project.id,
+      eventType: "runtime.inspect_started",
+      status: refreshedProject.runtimeStatus,
+      message: "Runtime inspection started.",
+      containerId: refreshedProject.containerId,
+      containerName: refreshedProject.containerName,
+    });
+
+    let reconciledRuntime;
+    try {
+      reconciledRuntime = await runtime.reconcileProjectRuntime(refreshedProject);
+      await persistRuntimeEvent({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        eventType: reconciledRuntime.status === "unbound" ? "runtime.stale" : "runtime.reconciled",
+        status: reconciledRuntime.status,
+        message:
+          reconciledRuntime.status === "unbound"
+            ? "Runtime metadata was stale and has been reset."
+            : "Runtime reconciliation succeeded.",
+        containerId: reconciledRuntime.containerId,
+        containerName: reconciledRuntime.containerName,
+      });
+    } catch (error) {
+      const outcome: OnCallRouteOutcome = {
+        type: "runtime_error",
+        replyMode,
+        text: `Runtime reconciliation failed: ${error instanceof Error ? error.message : "unknown runtime failure"}`,
+        projectId: project.id,
+        reason: "reconcile_failed",
+      };
+      await persistRuntimeEvent({
+        memory,
+        sessionId: boundSession.sessionId,
+        projectId: project.id,
+        eventType: "runtime.error",
+        status: "error",
+        message: outcome.text,
+      });
+      return { text: outcome.text, replyMode, outcome };
+    }
+
+    if (runtimeIntent === "status") {
+      const runtimeText = createRuntimeStatusText({
+        projectName: project.name,
+        status: reconciledRuntime.status,
+        containerId: reconciledRuntime.containerId,
+        containerName: reconciledRuntime.containerName,
+        runtimeFamily: reconciledRuntime.runtimeFamily,
+        runtimeError: reconciledRuntime.error,
+      });
+      const outcome: OnCallRouteOutcome = {
+        type: "success",
+        replyMode,
+        projectId: project.id,
+        projectName: project.name,
+        sessionId: boundSession.sessionId,
+        text: runtimeText,
+        execution: {
+          action: intent.action,
+          status: "ok",
+          source: "runtime",
+        },
+        runtimeOutcome: "runtime_reused",
+      };
+      return { text: runtimeText, replyMode, outcome };
+    }
+
+    await persistRuntimeEvent({
+      memory,
+      sessionId: boundSession.sessionId,
+      projectId: project.id,
       eventType: "runtime.ensure_requested",
-      status: project.runtimeStatus,
+      status: reconciledRuntime.status,
       message: "Runtime ensure requested before execution.",
-      containerId: project.containerId,
-      containerName: project.containerName,
+      containerId: reconciledRuntime.containerId,
+      containerName: reconciledRuntime.containerName,
     });
 
     let ensuredRuntime;
     try {
-      ensuredRuntime = await runtime.ensureProjectRuntime(project);
+      ensuredRuntime = await runtime.ensureProjectRuntime(refreshedProject);
     } catch (error) {
       const outcome: OnCallRouteOutcome = {
         type: "runtime_error",
@@ -529,7 +605,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       return { text: outcome.text, replyMode, outcome };
     }
 
-    const validation = await runtime.validateProjectRuntime(project);
+    const runtimeProject = (await projects.getProjectById(project.id)) ?? refreshedProject;
+    const validation = await runtime.validateProjectRuntime(runtimeProject);
     if (!validation.ok) {
       const outcome: OnCallRouteOutcome = {
         type: "runtime_missing",

@@ -44,6 +44,30 @@ function makeError(
   return { code, message, details };
 }
 
+function validateProjectMountAllowlist(
+  project: OnCallProject,
+  config: OnCallPolicyConfig,
+): OnCallPolicyError | null {
+  if (!project.allowedMounts?.length) {
+    return null;
+  }
+
+  for (const mount of project.allowedMounts) {
+    const resolvedMount = path.resolve(mount);
+    const mountAllowed = [config.projectsRoot, ...config.allowedProjectMounts].some((allowedRoot) =>
+      isWithinRoot(resolvedMount, allowedRoot),
+    );
+    if (!mountAllowed) {
+      return makeError("mount_disallowed", "Project mount is not in allowed project mounts.", {
+        mount,
+        resolvedMount,
+      });
+    }
+  }
+
+  return null;
+}
+
 export function validateWorkspacePath(
   project: OnCallProject,
   config: Partial<OnCallPolicyConfig> = {},
@@ -58,18 +82,7 @@ export function validateWorkspacePath(
     });
   }
 
-  if (project.allowedMounts?.length) {
-    const disallowedMount = project.allowedMounts.find(
-      (mount) => !resolvedConfig.allowedProjectMounts.includes(path.resolve(mount)),
-    );
-    if (disallowedMount) {
-      return makeError("mount_disallowed", "Project mount is not in allowed project mounts.", {
-        mount: disallowedMount,
-      });
-    }
-  }
-
-  return null;
+  return validateProjectMountAllowlist(project, resolvedConfig);
 }
 
 export function canExecuteProject(project: OnCallProject): OnCallPolicyError | null {
@@ -93,19 +106,30 @@ export function canBindProject(
   return canExecuteProject(project);
 }
 
-export function canStartRuntime(
+export function validateRuntimeBootstrap(
   project: OnCallProject,
   config: Partial<OnCallPolicyConfig> = {},
 ): OnCallPolicyError | null {
+  const executionPolicy = canExecuteProject(project);
+  if (executionPolicy) {
+    return executionPolicy;
+  }
+
   const workspacePolicy = validateWorkspacePath(project, config);
   if (workspacePolicy) {
     return workspacePolicy;
   }
 
-  if (project.status === "archived") {
-    return makeError("project_archived", "Archived projects cannot start runtimes.", {
-      projectId: project.id,
-    });
+  return null;
+}
+
+export function canStartRuntime(
+  project: OnCallProject,
+  config: Partial<OnCallPolicyConfig> = {},
+): OnCallPolicyError | null {
+  const bootstrapPolicy = validateRuntimeBootstrap(project, config);
+  if (bootstrapPolicy) {
+    return bootstrapPolicy;
   }
 
   const resolved = resolvePolicyConfig(config);

@@ -38,8 +38,20 @@ TeleClaw uses a runtime provider abstraction so lifecycle behavior can evolve wi
 
 - Default local provider: in-memory runtime simulation for deterministic tests and local development.
 - Docker seam: selected through `CONTAINER_RUNTIME=docker` or `TELECLAW_DOCKER_ENABLED=1`.
+- Docker provider now performs real inspect/create/start/stop/restart lifecycle through Docker CLI.
+- One project maps to one deterministic container name (`teleclaw-<project-id-slug>`).
+- Runtime reconciliation checks durable metadata against real container state after restarts.
 
-The Docker implementation is currently a seam with TODO markers where full container orchestration should be added.
+## Bootstrap + recovery
+
+Before starting runtime, TeleClaw can bootstrap project workspaces:
+
+- workspace path policy validation
+- create missing workspace directories
+- detect runtime family from metadata/language/workspace hints
+- persist bootstrap + runtime reconciliation metadata durably
+
+See [OnCallDev Docker runtime provider](/oncalldev-docker-provider) and [OnCallDev workspace bootstrap](/oncalldev-workspace-bootstrap).
 
 ## Policy and safety
 

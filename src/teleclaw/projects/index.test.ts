@@ -1,10 +1,18 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { createOnCallProjectRegistry } from "./index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  bootstrapProjectWorkspace,
+  createOnCallProjectRegistry,
+  detectRuntimeFamily,
+} from "./index.js";
 
 describe("createOnCallProjectRegistry", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("creates, reloads, and resolves project by alias", async () => {
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-projects-"));
     const registry = createOnCallProjectRegistry({
@@ -79,5 +87,63 @@ describe("createOnCallProjectRegistry", () => {
 
     expect(updated?.runtimeStatus).toBe("running");
     expect(updated?.containerId).toBe("ctr-frontend");
+  });
+
+  it("bootstraps workspace directories", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-projects-"));
+    vi.stubEnv("PROJECTS_ROOT", tmpDir);
+    const workspacePath = path.join(tmpDir, "worker-api");
+    const result = await bootstrapProjectWorkspace(
+      {
+        id: "worker-api",
+        name: "Worker API",
+        aliases: [],
+        language: "ts",
+        workspacePath,
+        containerId: null,
+        containerName: null,
+        runtimeStatus: "unbound",
+        runtimeFamily: null,
+        defaultReplyMode: "text",
+        status: "active",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastRuntimeStartAt: null,
+        lastRuntimeCheckAt: null,
+        runtimeError: null,
+        workspaceBootstrappedAt: null,
+        workspaceBootstrapError: null,
+      },
+      { createIfMissing: true },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.createdWorkspace).toBe(true);
+  });
+
+  it("detects runtime family from workspace hints", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-projects-"));
+    vi.stubEnv("PROJECTS_ROOT", tmpDir);
+    await writeFile(path.join(tmpDir, "pyproject.toml"), "[project]\nname='a'\n", "utf8");
+    const runtimeFamily = await detectRuntimeFamily({
+      id: "py-job",
+      name: "Py Job",
+      aliases: [],
+      language: null,
+      workspacePath: tmpDir,
+      containerId: null,
+      containerName: null,
+      runtimeStatus: "unbound",
+      runtimeFamily: null,
+      defaultReplyMode: "text",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastRuntimeStartAt: null,
+      lastRuntimeCheckAt: null,
+      runtimeError: null,
+      workspaceBootstrappedAt: null,
+      workspaceBootstrapError: null,
+    });
+    expect(runtimeFamily).toBe("python");
   });
 });
