@@ -48,3 +48,14 @@ This keeps TeleClaw stateful even when the process restarts.
 
 - Add configurable retention controls for long-running sessions.
 - Add session ownership and access controls beyond chat-level binding.
+
+## Runtime-aware session bindings
+
+`workerBinding` now persists runtime context fields used by execution routing:
+
+- `workerType`
+- `workerSessionId`
+- `containerId`
+- `containerName`
+
+Session `activeProjectId` remains the canonical project pointer for runtime attach/resume behavior.

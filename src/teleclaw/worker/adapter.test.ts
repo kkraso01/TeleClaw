@@ -20,6 +20,8 @@ describe("createOpenHandsAdapter", () => {
       workerSessionId: "worker-1",
       workspacePath: "/workspace/billing",
       containerId: "ctr-billing",
+      containerName: "teleclaw-billing",
+      runtimeFamily: "node",
       summary: "Tests failing",
       structuredState: { branch: "feat/billing" },
     });
@@ -35,6 +37,8 @@ describe("createOpenHandsAdapter", () => {
       workerSessionId: "worker-1",
       workspacePath: "/workspace/billing",
       containerId: "ctr-billing",
+      containerName: "teleclaw-billing",
+      runtimeFamily: "node",
       llmBaseUrl: "http://llm.local",
       llmApiKey: "secret",
       model: "gpt-5.4",

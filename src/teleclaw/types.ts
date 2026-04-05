@@ -22,6 +22,7 @@ export type OnCallInput = {
 };
 
 export type OnCallProjectStatus = "active" | "paused" | "archived";
+export type OnCallRuntimeStatus = "unbound" | "starting" | "running" | "stopped" | "error";
 
 export type OnCallProject = {
   id: string;
@@ -30,11 +31,16 @@ export type OnCallProject = {
   language: string | null;
   workspacePath: string;
   containerId: string | null;
+  containerName: string | null;
+  runtimeStatus: OnCallRuntimeStatus;
   runtimeFamily: string | null;
   defaultReplyMode: OnCallReplyMode | null;
   status: OnCallProjectStatus;
   createdAt: string;
   updatedAt: string;
+  lastRuntimeStartAt: string | null;
+  lastRuntimeCheckAt: string | null;
+  runtimeError: string | null;
   description?: string;
   tags?: string[];
   allowedMounts?: string[];
@@ -45,6 +51,7 @@ export type OnCallWorkerBinding = {
   workerType: string;
   workerSessionId: string | null;
   containerId: string | null;
+  containerName: string | null;
 };
 
 export type OnCallSessionPhase =
@@ -127,6 +134,15 @@ export type OnCallWorkerProgressEvent = {
   nextSuggestedStep?: string;
 };
 
+export type OnCallRuntimeEventType =
+  | "runtime.ensure_requested"
+  | "runtime.started"
+  | "runtime.reused"
+  | "runtime.stopped"
+  | "runtime.restarted"
+  | "runtime.validation_failed"
+  | "runtime.error";
+
 export type OnCallMemoryEvent =
   | {
       id: string;
@@ -185,6 +201,18 @@ export type OnCallMemoryEvent =
       type: "project_switch";
       fromProjectId?: string;
       toProjectId: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId: string;
+      type: "runtime_event";
+      eventType: OnCallRuntimeEventType;
+      status: OnCallRuntimeStatus;
+      containerId?: string | null;
+      containerName?: string | null;
+      message: string;
     }
   | {
       id: string;
@@ -274,7 +302,9 @@ export type OnCallPolicyErrorCode =
   | "project_paused"
   | "mount_disallowed"
   | "project_required"
-  | "container_binding_required";
+  | "runtime_family_disallowed"
+  | "runtime_attach_failed"
+  | "runtime_unavailable";
 
 export type OnCallPolicyError = {
   code: OnCallPolicyErrorCode;
@@ -293,8 +323,9 @@ export type OnCallRouteOutcome =
       execution: {
         action: OnCallAction;
         status: OnCallWorkerResult["status"];
-        source: "memory" | "worker";
+        source: "memory" | "worker" | "runtime";
       };
+      runtimeOutcome?: "runtime_started" | "runtime_reused";
       summary?: string;
       voiceMediaUrl?: string;
     }
@@ -321,6 +352,14 @@ export type OnCallRouteOutcome =
       type: "invalid_project_binding";
       replyMode: OnCallReplyMode;
       text: string;
+      reason: string;
+    }
+  | {
+      type: "runtime_missing" | "runtime_invalid" | "runtime_error";
+      replyMode: OnCallReplyMode;
+      text: string;
+      projectId: string;
+      status?: OnCallRuntimeStatus;
       reason: string;
     }
   | {

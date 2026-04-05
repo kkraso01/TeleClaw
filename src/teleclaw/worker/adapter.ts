@@ -1,10 +1,13 @@
 import type { OnCallAction, OnCallWorkerProgressEvent, OnCallWorkerResult } from "../types.js";
 
 export type OnCallWorkerContext = {
+  projectId?: string;
   sessionId?: string;
   workerSessionId?: string | null;
   workspacePath?: string;
   containerId?: string | null;
+  containerName?: string | null;
+  runtimeFamily?: string | null;
   summary?: string;
   structuredState?: Record<string, unknown>;
   onProgress?: (event: OnCallWorkerProgressEvent) => Promise<void> | void;
@@ -38,6 +41,8 @@ type OpenHandsPayload = {
   workerSessionId?: string | null;
   workspacePath?: string;
   containerId?: string | null;
+  containerName?: string | null;
+  runtimeFamily?: string | null;
   summary?: string;
   structuredState?: Record<string, unknown>;
   llmBaseUrl?: string;
@@ -82,6 +87,8 @@ function buildPayload(
     workerSessionId: context?.workerSessionId,
     workspacePath: context?.workspacePath,
     containerId: context?.containerId,
+    containerName: context?.containerName,
+    runtimeFamily: context?.runtimeFamily,
     summary: context?.summary,
     structuredState: context?.structuredState,
     llmBaseUrl: cfg.llmBaseUrl,

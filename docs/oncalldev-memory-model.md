@@ -69,3 +69,7 @@ Compaction prioritizes preserving goal, blockers, changes, test state, and next 
 - Summary generation is rule-based and should move to LLM summarization later.
 - Event retention policy is fixed for now; configurable limits are still TODO.
 - Memory writes are file-based JSON (MVP), not SQLite yet.
+
+## Runtime lifecycle events
+
+TeleClaw now persists runtime lifecycle events (`runtime.ensure_requested`, `runtime.started`, `runtime.reused`, `runtime.stopped`, `runtime.restarted`, `runtime.validation_failed`, `runtime.error`) in the same durable event model used for routing and worker traces.

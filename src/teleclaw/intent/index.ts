@@ -2,12 +2,12 @@ import type { OnCallInput, OnCallIntent } from "../types.js";
 
 const resumePattern = /^\s*(continue|resume|pick up)\b/i;
 const statusPattern =
-  /^\s*(status|what(?:'| i)?s the status|progress|send me a progress update|where are you stuck)\b/i;
+  /^\s*(status|what(?:'| i)?s the status|progress|send me a progress update|where are you stuck|is .* running)\b/i;
 const summarizePattern =
   /^\s*(summarize|summary|recap|what did you do|what changed|what did you change)\b/i;
 const voicePattern = /\b(reply\s+with\s+voice|voice\s+reply)\b/i;
 const projectPattern =
-  /\b(?:project|repo|workspace|switch\s+to|continue\s+the|continue|resume\s+the|summarize\s+the)\s*[:#-]?\s*([a-zA-Z0-9._-]+)/i;
+  /\b(?:project|repo|workspace|switch\s+to|continue\s+the|continue|resume\s+the|summarize\s+the|restart\s+the|stop\s+the|start\s+the|is\s+the)\s*[:#-]?\s*([a-zA-Z0-9._-]+)/i;
 
 export function resolveOnCallIntent(input: OnCallInput): OnCallIntent {
   const text = (input.transcript ?? input.body).trim();
