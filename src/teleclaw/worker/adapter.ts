@@ -1,4 +1,4 @@
-import type { OnCallAction, OnCallWorkerResult } from "../types.js";
+import type { OnCallAction, OnCallWorkerProgressEvent, OnCallWorkerResult } from "../types.js";
 
 export type OnCallWorkerContext = {
   sessionId?: string;
@@ -7,6 +7,7 @@ export type OnCallWorkerContext = {
   containerId?: string | null;
   summary?: string;
   structuredState?: Record<string, unknown>;
+  onProgress?: (event: OnCallWorkerProgressEvent) => Promise<void> | void;
 };
 
 type OpenHandsAdapterConfig = {
@@ -46,11 +47,11 @@ type OpenHandsPayload = {
 
 async function postAdapterRequest<T>(
   cfg: OpenHandsAdapterConfig,
-  path: string,
+  requestPath: string,
   body: OpenHandsPayload,
 ): Promise<T> {
   const fetchImpl = cfg.fetchImpl ?? fetch;
-  const response = await fetchImpl(new URL(path, cfg.baseUrl), {
+  const response = await fetchImpl(new URL(requestPath, cfg.baseUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -89,35 +90,55 @@ function buildPayload(
   };
 }
 
+async function emitProgressEvents(
+  context: OnCallWorkerContext | undefined,
+  result: OnCallWorkerResult,
+): Promise<void> {
+  if (!context?.onProgress || !Array.isArray(result.progressEvents)) {
+    return;
+  }
+  for (const event of result.progressEvents) {
+    await context.onProgress(event);
+  }
+}
+
 export function createOpenHandsAdapter(cfg: OpenHandsAdapterConfig): OpenHandsAdapter {
   return {
     async runTask(projectId, instruction, context) {
-      return await postAdapterRequest<OnCallWorkerResult>(
+      const result = await postAdapterRequest<OnCallWorkerResult>(
         cfg,
         "/tasks/run",
         buildPayload(cfg, "task", projectId, context, instruction),
       );
+      await emitProgressEvents(context, result);
+      return result;
     },
     async resume(projectId, context) {
-      return await postAdapterRequest<OnCallWorkerResult>(
+      const result = await postAdapterRequest<OnCallWorkerResult>(
         cfg,
         "/tasks/resume",
         buildPayload(cfg, "resume", projectId, context),
       );
+      await emitProgressEvents(context, result);
+      return result;
     },
     async getStatus(projectId, context) {
-      return await postAdapterRequest<OnCallWorkerResult>(
+      const result = await postAdapterRequest<OnCallWorkerResult>(
         cfg,
         "/tasks/status",
         buildPayload(cfg, "status", projectId, context),
       );
+      await emitProgressEvents(context, result);
+      return result;
     },
     async summarize(projectId, context) {
-      return await postAdapterRequest<OnCallWorkerResult>(
+      const result = await postAdapterRequest<OnCallWorkerResult>(
         cfg,
         "/tasks/summarize",
         buildPayload(cfg, "summarize", projectId, context),
       );
+      await emitProgressEvents(context, result);
+      return result;
     },
   };
 }

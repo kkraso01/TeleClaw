@@ -34,15 +34,17 @@ Each session stores:
 
 This keeps TeleClaw stateful even when the process restarts.
 
-## Session and project interplay
+## Session and memory interplay
 
 - Active project is backend-controlled by router resolution.
 - User text cannot directly force arbitrary host path routing.
 - Worker execution always uses the session-bound project context.
 - If no project is selected, router returns a structured non-execution outcome.
+- Project switches emit durable memory events for auditability.
+- Worker progress updates append recent actions and update structured state.
+- Status and summarize requests can be answered from rolling memory summaries without rerunning worker execution.
 
 ## Current TODOs
 
-- Add retention controls and compaction for long-running sessions.
-- Add optional persistent memory/event store for full transcript recall.
+- Add configurable retention controls for long-running sessions.
 - Add session ownership and access controls beyond chat-level binding.

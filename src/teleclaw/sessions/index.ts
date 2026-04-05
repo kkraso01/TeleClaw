@@ -182,7 +182,10 @@ export function createOnCallSessionManager(
     async setStructuredState(sessionId, structuredState) {
       return await this.updateSession(sessionId, (session) => ({
         ...session,
-        structuredState,
+        structuredState: {
+          ...session.structuredState,
+          ...structuredState,
+        },
       }));
     },
   };

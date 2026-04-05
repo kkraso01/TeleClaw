@@ -44,11 +44,13 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 
 - [Project routing](/oncalldev-project-routing)
 - [Session model](/oncalldev-session-model)
+- [Memory model](/oncalldev-memory-model)
+- [Voice flow](/oncalldev-voice-flow)
 
 ## Known MVP TODOs
 
 - Replace file-backed project/session stores with SQLite when migration and deploy footprint are acceptable.
-- Implement real Telegram voice-note STT and optional TTS output wiring.
+- Replace mock STT/TTS providers with production integrations and media persistence.
 - Add explicit project authorization policy per Telegram user.
 - Add health probes for OpenHands project containers.
-- Add channel-visible progress updates for long-running worker tasks.
+- Expand channel-visible progress updates for long-running worker tasks.

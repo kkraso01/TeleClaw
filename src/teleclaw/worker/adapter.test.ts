@@ -40,4 +40,35 @@ describe("createOpenHandsAdapter", () => {
       model: "gpt-5.4",
     });
   });
+
+  it("forwards worker progress events to callback seam", async () => {
+    const onProgress = vi.fn();
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "ok",
+        text: "done",
+        progressEvents: [
+          {
+            atMs: Date.now(),
+            kind: "testing_started",
+            message: "running tests",
+          },
+        ],
+      }),
+    });
+    const adapter = createOpenHandsAdapter({
+      baseUrl: "http://localhost:3100",
+      fetchImpl: fetchImpl as never,
+    });
+
+    await adapter.runTask("billing", "run tests", { onProgress });
+
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "testing_started",
+      }),
+    );
+  });
 });
