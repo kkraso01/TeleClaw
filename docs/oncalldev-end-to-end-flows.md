@@ -88,7 +88,7 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 
 ## Known limitations after this milestone
 
-- STT/TTS providers remain integration seams; production provider wiring is still TODO.
+- STT now defaults to local `faster-whisper`; alternative STT providers remain TODO behind the same provider seam.
 - Approval policy remains text-pattern based (not full semantic plan analysis).
 - One pending approval per session remains the supported model.
 - OpenHands internals remain abstracted; TeleClaw continues to normalize worker output heuristically where needed.

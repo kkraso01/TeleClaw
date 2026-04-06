@@ -203,11 +203,26 @@ function isWeakTranscript(text: string, metadata?: Record<string, unknown>): boo
   if (!text.trim()) {
     return true;
   }
+  const confidence = metadata?.confidence;
+  if (typeof confidence === "number" && Number.isFinite(confidence) && confidence < 0.35) {
+    return true;
+  }
   const quality = metadata?.quality;
   if (quality === "low" || quality === "missing") {
     return true;
   }
   return false;
+}
+
+function buildVoiceTranscriptFallbackText(metadata?: Record<string, unknown>): string {
+  const reason = metadata?.reason;
+  if (reason === "stt_provider_failure") {
+    return "I could not transcribe that voice note because voice transcription is temporarily unavailable. Please retry or send the request as text.";
+  }
+  if (reason === "stt_provider_not_supported" || reason === "stt_unavailable") {
+    return "Voice transcription is not configured yet in this TeleClaw runtime. Please send your request as text.";
+  }
+  return "I could not understand that voice note clearly enough to run anything. Please try again or send the request as text.";
 }
 
 function toSessionPhase(
@@ -2023,8 +2038,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           });
 
       if (isWeakTranscript(transcript.text, transcript.metadata)) {
-        const text =
-          "I could not understand that voice note clearly enough to run anything. Please send a short text command or retry the voice note.";
+        const text = buildVoiceTranscriptFallbackText(transcript.metadata);
         await memory.appendEvent(
           createEvent({
             atMs: input.timestampMs,
@@ -2062,6 +2076,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           type: "inbound_voice_transcript",
           text: transcript.text,
           provider: transcript.provider,
+          metadata: transcript.metadata,
         }),
       );
 
