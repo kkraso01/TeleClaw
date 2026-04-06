@@ -76,7 +76,9 @@ Default env surface:
 Notes:
 
 - Piper outputs `.wav` artifacts for Telegram delivery.
-- Artifacts are stored in `TTS_OUTPUT_DIR` until manually cleaned up.
+- Artifacts are stored in `TTS_OUTPUT_DIR` with automatic cleanup before synthesis.
+- Cleanup policy defaults to `TTS_OUTPUT_TTL_SECONDS=604800` (7 days) and `TTS_OUTPUT_MAX_FILES=500`.
+- Cleanup deletes expired files first, then prunes oldest files above max-count retention.
 - If Piper is missing or misconfigured, TeleClaw falls back to text.
 
 ## Exact fallback behavior
@@ -98,5 +100,15 @@ TeleClaw stays first-class for text under all failure modes.
 
 - `whisper.cpp` and Piper binaries/models must be installed locally and configured.
 - Whisper confidence remains an inferred heuristic from provider output signals.
-- Voice output retention is currently file-based; no automatic TTL cleanup is enforced yet.
+- Voice output retention is now automatic and configurable (`TTS_OUTPUT_TTL_SECONDS`, `TTS_OUTPUT_MAX_FILES`).
 - OpenAI TTS is still available as a non-default compatibility option.
+
+## Optional real-binary integration checks
+
+- Real local binary checks are opt-in and skipped by default.
+- Enable with:
+  - `TELECLAW_RUN_REAL_STT_TESTS=1` for whisper.cpp
+  - `TELECLAW_RUN_REAL_TTS_TESTS=1` for Piper
+- Run:
+  - `pnpm test src/teleclaw/voice/providers/stt-whispercpp.integration.test.ts`
+  - `pnpm test src/teleclaw/voice/providers/tts-piper.integration.test.ts`

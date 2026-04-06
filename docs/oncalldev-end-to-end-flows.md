@@ -100,4 +100,7 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 - Enable TeleClaw routing: `ONCALLDEV_ENABLED=1`.
 - Validate runtime health via status queries before long runs.
 - For voice, ensure local whisper.cpp and Piper binaries/models are installed and configured.
+- Use scoped verification first: `pnpm teleclaw:test` and `pnpm teleclaw:voice:test`.
+- Run optional real-binary checks only when explicitly enabled via `TELECLAW_RUN_REAL_STT_TESTS=1` and `TELECLAW_RUN_REAL_TTS_TESTS=1`.
 - Use “what are you waiting for?” as the first check when execution appears paused.
+- If repo-wide checks fail outside `src/teleclaw/**`, treat them as separate from TeleClaw local iteration unless your changes touched those areas.

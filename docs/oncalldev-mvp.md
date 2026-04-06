@@ -47,6 +47,15 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - [Session model](/oncalldev-session-model)
 - [Memory model](/oncalldev-memory-model)
 - [Voice flow](/oncalldev-voice-flow)
+- [Local setup](/oncalldev-local-setup)
+
+## Local operator workflow
+
+- Primary runbook: [OnCallDev local setup](/oncalldev-local-setup).
+- Use scoped checks during daily iteration:
+  - `pnpm teleclaw:test`
+  - `pnpm teleclaw:voice:test`
+- Voice artifacts in `TTS_OUTPUT_DIR` now have automatic retention cleanup (TTL + max-file policy) to prevent unbounded growth.
 
 ## Known MVP TODOs
 
