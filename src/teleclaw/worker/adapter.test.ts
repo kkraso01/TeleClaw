@@ -6,6 +6,7 @@ vi.mock("./openhands/config.js", () => ({
   resolveOpenHandsBridgeConfig: vi.fn(() => ({
     enabled: true,
     mode: "vendor_local",
+    remoteFallbackEnabled: true,
     endpoint: "http://localhost:3001",
     vendorPath: "/tmp/vendor/openhands",
     pythonBin: "python3",

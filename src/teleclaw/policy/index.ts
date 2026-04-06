@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { OnCallRuntimeState } from "../runtime/index.js";
-import type { OnCallPolicyError, OnCallProject } from "../types.js";
+import type { OnCallApprovalClassification, OnCallPolicyError, OnCallProject } from "../types.js";
 
 type OnCallPolicyConfig = {
   projectsRoot: string;
@@ -231,4 +231,86 @@ export function explainRuntimePolicyFailure(policy: OnCallPolicyError): string {
 
 export function explainPolicyFailure(policy: OnCallPolicyError): string {
   return `${policy.message} [${policy.code}]`;
+}
+
+const dangerousActionRules: Array<{
+  pattern: RegExp;
+  classification: OnCallApprovalClassification;
+}> = [
+  {
+    pattern:
+      /\brm\s+-rf\b|\brmdir\b|\bdel\s+\/[sq]\b|\bunlink\b|\bdelete\s+(file|files|folder|folders|directory|directories)\b/i,
+    classification: {
+      decision: "requires_approval",
+      reason: "Potential file or directory deletion detected.",
+      matchedRule: "delete_files",
+      riskLevel: "high",
+      requiresExplicitApproval: true,
+    },
+  },
+  {
+    pattern: /\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-fdx\b|\bgit\s+checkout\s+--\s+\./i,
+    classification: {
+      decision: "blocked",
+      reason: "Potentially destructive repository reset detected.",
+      matchedRule: "force_reset",
+      riskLevel: "high",
+      requiresExplicitApproval: true,
+    },
+  },
+  {
+    pattern: /\bgit\s+branch\s+-D\b|\bgit\s+push\s+--force\b/i,
+    classification: {
+      decision: "requires_approval",
+      reason: "Destructive branch operation detected.",
+      matchedRule: "destructive_branch",
+      riskLevel: "high",
+      requiresExplicitApproval: true,
+    },
+  },
+  {
+    pattern: /\bnpm\s+remove\b|\bpnpm\s+remove\b|\byarn\s+remove\b|\buninstall\b/i,
+    classification: {
+      decision: "requires_approval",
+      reason: "Dependency removal or major dependency mutation detected.",
+      matchedRule: "dependency_removal",
+      riskLevel: "medium",
+      requiresExplicitApproval: true,
+    },
+  },
+  {
+    pattern: /\b(clean|cleanup)\b.*\b(all|workspace|repo|repository)\b/i,
+    classification: {
+      decision: "requires_approval",
+      reason: "Broad cleanup request detected.",
+      matchedRule: "mass_cleanup",
+      riskLevel: "medium",
+      requiresExplicitApproval: true,
+    },
+  },
+  {
+    pattern: /\bcurl\s+.*\|\s*(sh|bash)\b|\bwget\s+.*\|\s*(sh|bash)\b|\bdd\s+if=\/dev\//i,
+    classification: {
+      decision: "blocked",
+      reason: "Dangerous shell operation detected.",
+      matchedRule: "dangerous_shell",
+      riskLevel: "high",
+      requiresExplicitApproval: true,
+    },
+  },
+];
+
+export function classifyApprovalNeed(instruction: string): OnCallApprovalClassification {
+  for (const rule of dangerousActionRules) {
+    if (rule.pattern.test(instruction)) {
+      return rule.classification;
+    }
+  }
+  return {
+    decision: "allowed",
+    reason: "No risky operation pattern detected.",
+    matchedRule: "none",
+    riskLevel: "low",
+    requiresExplicitApproval: false,
+  };
 }

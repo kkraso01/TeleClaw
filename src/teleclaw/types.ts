@@ -154,10 +154,14 @@ export type OnCallMemoryState = {
 
 export type OnCallWorkerProgressKind =
   | "task_started"
+  | "task_resumed"
   | "planning_started"
   | "implementation_started"
   | "testing_started"
+  | "build_started"
+  | "build_finished"
   | "dependency_install"
+  | "dependency_install_finished"
   | "tests_failed"
   | "tests_passed"
   | "summary_ready"
@@ -325,6 +329,27 @@ export type OnCallMemoryEvent =
       id: string;
       atMs: number;
       sessionId: string;
+      projectId: string;
+      type: "approval_requested";
+      instruction: string;
+      reason: string;
+      matchedRule: OnCallApprovalClassification["matchedRule"];
+      riskLevel: OnCallApprovalRiskLevel;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId: string;
+      type: "approval_decision";
+      decision: "granted" | "rejected";
+      reason: string;
+      matchedRule: OnCallApprovalClassification["matchedRule"];
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
       projectId?: string;
       type: "outbound_reply";
       mode: OnCallReplyMode;
@@ -365,8 +390,30 @@ export type OnCallWorkerResult = {
   text: string;
   summary?: string;
   workerSessionId?: string;
+  phase?: OnCallSessionPhase;
+  blockerReason?: string;
+  nextSuggestedStep?: string;
+  filesChanged?: string[];
   progressEvents?: OnCallWorkerProgressEvent[];
   meta?: Record<string, unknown>;
+};
+
+export type OnCallApprovalRiskLevel = "low" | "medium" | "high";
+export type OnCallApprovalPolicyDecision = "allowed" | "requires_approval" | "blocked";
+
+export type OnCallApprovalClassification = {
+  decision: OnCallApprovalPolicyDecision;
+  reason: string;
+  matchedRule:
+    | "dangerous_shell"
+    | "force_reset"
+    | "destructive_branch"
+    | "delete_files"
+    | "dependency_removal"
+    | "mass_cleanup"
+    | "none";
+  riskLevel: OnCallApprovalRiskLevel;
+  requiresExplicitApproval: boolean;
 };
 
 export type OnCallPolicyErrorCode =
@@ -381,7 +428,9 @@ export type OnCallPolicyErrorCode =
   | "project_required"
   | "runtime_family_disallowed"
   | "runtime_attach_failed"
-  | "runtime_unavailable";
+  | "runtime_unavailable"
+  | "approval_required"
+  | "destructive_action_blocked";
 
 export type OnCallPolicyError = {
   code: OnCallPolicyErrorCode;
@@ -444,4 +493,11 @@ export type OnCallRouteOutcome =
       replyMode: OnCallReplyMode;
       text: string;
       projectId: string;
+    }
+  | {
+      type: "approval_required";
+      replyMode: OnCallReplyMode;
+      text: string;
+      projectId: string;
+      approval: OnCallApprovalClassification;
     };

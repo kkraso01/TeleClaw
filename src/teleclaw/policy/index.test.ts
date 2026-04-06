@@ -2,6 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   canStartRuntime,
+  classifyApprovalNeed,
   validateProjectCreationInput,
   validateRepoUrl,
   validateRuntimeBootstrap,
@@ -83,5 +84,16 @@ describe("teleclaw runtime policy", () => {
   it("rejects invalid repo URL", () => {
     const result = validateRepoUrl("file:///tmp/local");
     expect(result?.code).toBe("repo_url_invalid");
+  });
+
+  it("classifies dangerous shell and delete actions for approval", () => {
+    expect(classifyApprovalNeed("delete files under src")).toMatchObject({
+      decision: "requires_approval",
+      matchedRule: "delete_files",
+    });
+    expect(classifyApprovalNeed("git reset --hard HEAD~1")).toMatchObject({
+      decision: "blocked",
+      matchedRule: "force_reset",
+    });
   });
 });

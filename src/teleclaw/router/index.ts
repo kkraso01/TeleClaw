@@ -5,6 +5,7 @@ import {
   canBindProject,
   canBootstrapProject,
   canStartRuntime,
+  classifyApprovalNeed,
   explainPolicyFailure,
   explainRuntimePolicyFailure,
   requireExecutionContext,
@@ -23,6 +24,7 @@ import type {
   OnCallRuntimeEventType,
   OnCallRuntimeStatus,
   OnCallSessionState,
+  OnCallStructuredState,
   OnCallVoiceSynthesisResult,
   OnCallWorkerProgressEvent,
   OnCallWorkerResult,
@@ -68,11 +70,11 @@ function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" 
   return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
 }
 
-function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
+function createEvent<TEvent extends OnCallMemoryEvent>(event: Omit<TEvent, "id">): TEvent {
   return {
     ...event,
     id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
-  };
+  } as TEvent;
 }
 
 function resolveRuntimeIntent(instruction: string): RuntimeIntent {
@@ -180,6 +182,7 @@ function createMemoryBackedStatusText(params: {
   session: OnCallSessionState;
   action: OnCallAction;
   projectName: string;
+  structuredState: OnCallStructuredState;
 }): string | null {
   const summary = params.summary.trim();
   const askedForSummary = params.action === "summarize";
@@ -192,9 +195,61 @@ function createMemoryBackedStatusText(params: {
     return null;
   }
 
+  const filesLine = params.structuredState.filesChanged?.length
+    ? `Changed files: ${params.structuredState.filesChanged.slice(-8).join(", ")}`
+    : "Changed files: none captured yet";
+  const testsLine =
+    params.structuredState.lastTestRunStatus &&
+    params.structuredState.lastTestRunStatus !== "unknown"
+      ? `Last test run: ${params.structuredState.lastTestRunStatus}`
+      : "Last test run: unknown";
+  const blockerLine = params.structuredState.currentBlocker
+    ? `Blocker: ${params.structuredState.currentBlocker}`
+    : "Blocker: none recorded";
+  const nextStepLine = params.structuredState.nextSuggestedStep
+    ? `Next step: ${params.structuredState.nextSuggestedStep}`
+    : "Next step: not recorded";
+
   return askedForSummary
-    ? `Summary for ${params.projectName}:\n${summary}`
-    : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}`;
+    ? `Summary for ${params.projectName}:\n${summary}\n${filesLine}\n${testsLine}\n${blockerLine}\n${nextStepLine}`
+    : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}\n${filesLine}\n${testsLine}\n${blockerLine}\n${nextStepLine}`;
+}
+
+async function persistWorkerResultState(params: {
+  sessions: OnCallSessionManager;
+  memory: OnCallMemoryStore;
+  sessionId: string;
+  projectId: string;
+  result: OnCallWorkerResult;
+}): Promise<void> {
+  await params.sessions.setStructuredState(params.sessionId, {
+    currentPhase: params.result.phase,
+    currentBlocker: params.result.blockerReason,
+    nextSuggestedStep: params.result.nextSuggestedStep,
+    filesChanged: params.result.filesChanged,
+    filesChangedSummary: params.result.filesChanged?.length
+      ? `${params.result.filesChanged.length} file(s) changed`
+      : undefined,
+  });
+
+  if (params.result.blockerReason) {
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "worker_status_progress",
+        progress: {
+          atMs: Date.now(),
+          kind: "worker_error",
+          message: params.result.blockerReason,
+          phase: "blocked",
+          blockers: [params.result.blockerReason],
+          nextSuggestedStep: params.result.nextSuggestedStep,
+        },
+      }),
+    );
+  }
 }
 
 function createRuntimeStatusText(params: {
@@ -740,6 +795,68 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       };
     }
 
+    if (intent.action === "task" || intent.action === "resume") {
+      const approval = classifyApprovalNeed(intent.instruction);
+      if (approval.decision !== "allowed") {
+        const eventType = approval.decision === "blocked" ? "policy_block" : "approval_requested";
+        if (eventType === "policy_block") {
+          await memory.appendEvent(
+            createEvent({
+              atMs: Date.now(),
+              sessionId: boundSession.sessionId,
+              projectId: refreshedProject.id,
+              type: "policy_block",
+              code: "destructive_action_blocked",
+              message: approval.reason,
+            }),
+          );
+          const text = `Execution blocked by TeleClaw approval policy: ${approval.reason}`;
+          return {
+            text,
+            replyMode,
+            outcome: {
+              type: "blocked_by_policy",
+              replyMode,
+              text,
+              projectId: refreshedProject.id,
+              policy: {
+                code: "destructive_action_blocked",
+                message: approval.reason,
+              },
+            },
+          };
+        }
+
+        await memory.appendEvent(
+          createEvent({
+            atMs: Date.now(),
+            sessionId: boundSession.sessionId,
+            projectId: refreshedProject.id,
+            type: "approval_requested",
+            instruction: intent.instruction,
+            reason: approval.reason,
+            matchedRule: approval.matchedRule,
+            riskLevel: approval.riskLevel,
+          }),
+        );
+        await sessions.setPhase(boundSession.sessionId, "awaiting_approval");
+        const text =
+          `Approval required before executing this action: ${approval.reason}\n` +
+          `Reply with "approve ${refreshedProject.id}" to continue.`;
+        return {
+          text,
+          replyMode,
+          outcome: {
+            type: "approval_required",
+            replyMode,
+            text,
+            projectId: refreshedProject.id,
+            approval,
+          },
+        };
+      }
+    }
+
     const runtimeStartPolicy = canStartRuntime(project);
     if (runtimeStartPolicy) {
       const outcome: OnCallRouteOutcome = {
@@ -1016,6 +1133,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       session: boundSession,
       action: intent.action,
       projectName: project.name,
+      structuredState: memoryState,
     });
 
     if (memoryBackedText) {
@@ -1213,6 +1331,13 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         event: progressEvent,
       });
     }
+    await persistWorkerResultState({
+      sessions,
+      memory,
+      sessionId: boundSession.sessionId,
+      projectId: project.id,
+      result,
+    });
 
     if (/\binstall\b/.test(normalizedInstruction)) {
       await memory.appendEvent(
@@ -1292,7 +1417,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     }
 
     const finalText = buildReply(result);
-    await sessions.setPhase(boundSession.sessionId, "reporting");
+    await sessions.setPhase(boundSession.sessionId, result.phase ?? "reporting");
     const voiceReply = await maybeSynthesizeVoiceReply({
       responseText: finalText,
       replyMode,

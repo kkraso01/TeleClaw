@@ -6,6 +6,7 @@ describe("resolveOpenHandsBridgeConfig", () => {
     const config = resolveOpenHandsBridgeConfig({} as NodeJS.ProcessEnv);
     expect(config.enabled).toBe(true);
     expect(config.mode).toBe("vendor_local");
+    expect(config.remoteFallbackEnabled).toBe(true);
     expect(config.vendorPath.endsWith("vendor/openhands")).toBe(true);
   });
 

@@ -10,12 +10,35 @@ import type {
 function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progressEvents"] {
   const now = Date.now();
   const events: NonNullable<OpenHandsBridgeResponse["progressEvents"]> = [];
+  if (/plan|planning/i.test(output)) {
+    events.push({
+      atMs: now,
+      kind: "planning_started",
+      message: "Planning phase observed in OpenHands output.",
+      phase: "planning",
+    });
+  }
+  if (/implement|coding|writing code/i.test(output)) {
+    events.push({
+      atMs: now,
+      kind: "implementation_started",
+      message: "Implementation phase observed in OpenHands output.",
+      phase: "implementing",
+    });
+  }
   if (/install|dependency/i.test(output)) {
     events.push({
       atMs: now,
       kind: "dependency_install",
       message: "Dependency install observed in OpenHands output.",
     });
+    if (/installed|complete|finished/i.test(output)) {
+      events.push({
+        atMs: now,
+        kind: "dependency_install_finished",
+        message: "Dependency install completion observed in OpenHands output.",
+      });
+    }
   }
   if (/test/i.test(output)) {
     events.push({
@@ -24,6 +47,38 @@ function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progr
       message: "Test activity observed in OpenHands output.",
       phase: "testing",
     });
+    if (/all tests passed|tests passed|passing/i.test(output)) {
+      events.push({
+        atMs: now,
+        kind: "tests_passed",
+        message: "Test pass signal observed in OpenHands output.",
+        phase: "testing",
+      });
+    }
+    if (/tests failed|failing test|failed:/i.test(output)) {
+      events.push({
+        atMs: now,
+        kind: "tests_failed",
+        message: "Test failure signal observed in OpenHands output.",
+        phase: "blocked",
+      });
+    }
+  }
+  if (/build/i.test(output)) {
+    events.push({
+      atMs: now,
+      kind: "build_started",
+      message: "Build activity observed in OpenHands output.",
+      phase: "implementing",
+    });
+    if (/build (?:succeeded|passed|complete)/i.test(output)) {
+      events.push({
+        atMs: now,
+        kind: "build_finished",
+        message: "Build completion observed in OpenHands output.",
+        phase: "reporting",
+      });
+    }
   }
   if (/error|exception|traceback/i.test(output)) {
     events.push({
@@ -136,7 +191,11 @@ async function runVendoredLocal(
         status: "ok",
         text: out || "OpenHands completed task.",
         summary: out || undefined,
+        phase: "reporting",
+        blockerReason: undefined,
+        nextSuggestedStep: "Review changes and run any remaining validation.",
         workerSessionId: sessionName,
+        filesChanged: [],
         progressEvents: inferProgressFromOutput(combined),
         meta: { mode: "vendor_local", exitCode: 0 },
       });
@@ -157,7 +216,25 @@ export function createOpenHandsBridge(cfg: OpenHandsBridgeConfig) {
       if (cfg.mode === "remote_http") {
         return await runRemoteHttp(cfg, request);
       }
-      return await runVendoredLocal(cfg, request);
+      const vendoredResult = await runVendoredLocal(cfg, request);
+      if (
+        vendoredResult.status === "error" &&
+        cfg.remoteFallbackEnabled &&
+        cfg.endpoint &&
+        !vendoredResult.meta?.fallbackAttempted
+      ) {
+        const remoteResult = await runRemoteHttp(cfg, request);
+        return {
+          ...remoteResult,
+          meta: {
+            ...remoteResult.meta,
+            mode: "remote_http_fallback",
+            fallbackFrom: "vendor_local",
+            vendoredError: vendoredResult.text,
+          },
+        };
+      }
+      return vendoredResult;
     },
   };
 }
