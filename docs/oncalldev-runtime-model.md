@@ -67,3 +67,13 @@ See [OnCallDev Project Routing](/oncalldev-project-routing) and [OnCallDev Sessi
 ## Bootstrap and repo awareness
 
 Runtime orchestration now consumes project bootstrap state (`bootstrapStatus`) plus repo metadata (`repoStatus`, `branch`) before execution.
+
+## User-facing runtime recovery messaging
+
+Runtime lifecycle remains TeleClaw-owned, and this milestone improves user-facing explanations when:
+
+- reconciliation fails
+- runtime ensure/start fails
+- runtime validation detects missing/stale bindings
+
+Replies now prioritize clear explanation + next-step guidance while detailed diagnostics stay in durable TeleClaw state/events.

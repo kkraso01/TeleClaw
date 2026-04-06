@@ -45,11 +45,14 @@ export function createPendingApproval(params: {
 }
 
 export function renderApprovalPrompt(approval: OnCallPendingApproval): string {
-  return (
-    `Approval required for ${approval.projectId}: ${approval.riskReason}\n` +
-    `Blocked action: ${approval.normalizedActionSummary}\n` +
-    `Reply with "approve" to continue or "reject" to cancel.`
-  );
+  const preview = summarizeInstruction(approval.originalInstruction);
+  return [
+    `I need your approval before I continue on project ${approval.projectId}.`,
+    `Risky action: ${approval.normalizedActionSummary}`,
+    `Why this needs approval: ${approval.riskReason}`,
+    `Action preview: ${preview}`,
+    'Reply "approve" to continue, or "reject" to cancel this action.',
+  ].join("\n");
 }
 
 export function renderPendingApprovalStatus(pendingApproval: OnCallPendingApproval | null): {
@@ -63,9 +66,10 @@ export function renderPendingApprovalStatus(pendingApproval: OnCallPendingApprov
 
   return {
     text:
-      `I am waiting for approval on project ${pendingApproval.projectId}. ` +
+      `I am paused and waiting for approval on project ${pendingApproval.projectId}. ` +
+      `Blocked action: ${pendingApproval.normalizedActionSummary}. ` +
       `Reason: ${pendingApproval.riskReason}. ` +
-      `Action: ${pendingApproval.normalizedActionSummary}. ` +
+      `Reply approve to continue or reject to cancel. ` +
       `Requested at ${pendingApproval.createdAt}.`,
   };
 }

@@ -92,3 +92,9 @@ TeleClaw persists:
 - Resume is safe re-execution from stored context, not low-level continuation of worker internals.
 - MVP supports one active pending approval per session.
 - Worker-internal step-by-step shell plan introspection is not fully surfaced from vendored OpenHands yet.
+
+## UX polish updates in this milestone
+
+- Approval prompts now explicitly call out the risky action, project, reason, and a short action preview.
+- Approval status answers now state that TeleClaw is paused and waiting for explicit approval.
+- Approve/reject responses are intentionally short and conversational while preserving durable lifecycle state transitions.

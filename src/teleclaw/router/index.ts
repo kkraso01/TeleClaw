@@ -162,6 +162,10 @@ async function maybeSynthesizeVoiceReply(params: {
   }
 }
 
+function buildVoiceFallbackText(baseText: string): string {
+  return `${baseText}\n\n(Voice reply was unavailable, so I sent text.)`;
+}
+
 async function invokeWorker(params: {
   action: OnCallAction;
   worker: OpenHandsAdapter;
@@ -182,14 +186,28 @@ async function invokeWorker(params: {
   }
 }
 
-function buildReply(result: OnCallWorkerResult): string {
+function buildReply(result: OnCallWorkerResult, projectName: string): string {
   if (result.status === "error") {
-    return `OpenHands error: ${result.text}`;
+    if (result.testStatus === "failed") {
+      return `I ran tests for ${projectName}, but they failed. ${result.text}`;
+    }
+    return `I could not complete that task for ${projectName}. ${result.text}`;
   }
   if (result.status === "busy") {
-    return `Working: ${result.text}`;
+    return `I am still working on ${projectName}. ${result.text}`;
   }
   return result.text;
+}
+
+function isWeakTranscript(text: string, metadata?: Record<string, unknown>): boolean {
+  if (!text.trim()) {
+    return true;
+  }
+  const quality = metadata?.quality;
+  if (quality === "low" || quality === "missing") {
+    return true;
+  }
+  return false;
 }
 
 function toSessionPhase(
@@ -626,7 +644,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       }
 
       if (!activePendingApproval) {
-        const text = "There is no pending approval request to act on.";
+        const text =
+          "There is no pending approval right now. Ask me what I am working on if you want a status update.";
         await memory.appendEvent(
           createEvent({
             atMs: Date.now(),
@@ -672,7 +691,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
             message: `Approval rejected for action: ${activePendingApproval.normalizedActionSummary}`,
           }),
         );
-        const text = `Understood — I canceled the pending action for ${activePendingApproval.projectId}.`;
+        const text = `Understood. I canceled that risky action for ${activePendingApproval.projectId}.`;
         const outcome: OnCallRouteOutcome = {
           type: "approval_rejected",
           replyMode,
@@ -743,8 +762,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       );
       const text =
         resumed.outcome.type === "success"
-          ? `Approved and resumed: ${resumed.text}`
-          : `Approval was granted, but resume failed: ${resumed.text}`;
+          ? `Approved. I resumed work on ${activePendingApproval.projectId}. ${resumed.text}`
+          : `Approval was granted, but I could not resume work on ${activePendingApproval.projectId}. ${resumed.text}`;
       return {
         text,
         replyMode: resumed.replyMode,
@@ -881,7 +900,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "needs_clarification",
         replyMode,
-        text: "I found multiple matching projects. Please clarify which project to use.",
+        text: "I found multiple matching projects. Tell me which one to use so I can continue.",
         candidates: projectResolution.candidates.map((candidate) => ({
           id: candidate.id,
           name: candidate.name,
@@ -909,7 +928,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         replyMode,
         text: intent.projectRef
           ? `I could not find a project named "${intent.projectRef}".`
-          : "No active project is bound to this chat yet. Ask to switch to a project first.",
+          : "No active project is set for this chat yet. Tell me which project to use, for example: switch to project billing.",
         requestedRef: intent.projectRef,
       };
       await memory.appendEvent(
@@ -1001,7 +1020,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "invalid_project_binding",
         replyMode,
-        text: "Failed to bind chat session to project context safely.",
+        text: "I could not safely switch this chat into that project context. Please try again.",
         reason: "session_bind_failed",
       };
       await memory.appendEvent(
@@ -1207,7 +1226,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
               message: approval.reason,
             }),
           );
-          const text = `Execution blocked by TeleClaw approval policy: ${approval.reason}`;
+          const text = `I cannot run that action because TeleClaw policy blocked it: ${approval.reason}`;
           return {
             text,
             replyMode,
@@ -1326,7 +1345,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "runtime_error",
         replyMode,
-        text: `Runtime reconciliation failed: ${error instanceof Error ? error.message : "unknown runtime failure"}`,
+        text: `I could not reconcile the runtime state for ${project.name}, so I paused execution. ${error instanceof Error ? error.message : "Unknown runtime failure."}`,
         projectId: project.id,
         reason: "reconcile_failed",
       };
@@ -1385,7 +1404,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "runtime_error",
         replyMode,
-        text: `Runtime controller failed: ${error instanceof Error ? error.message : "unknown runtime failure"}`,
+        text: `I could not prepare the runtime for ${project.name}, so I did not start execution. ${error instanceof Error ? error.message : "Unknown runtime failure."}`,
         projectId: project.id,
         reason: "ensure_failed",
       };
@@ -1444,7 +1463,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "runtime_missing",
         replyMode,
-        text: `Runtime unavailable: ${validation.reason}`,
+        text: `I could not reach the runtime for ${project.name} (${validation.reason}). Please ask me to restart the runtime, then try again.`,
         projectId: project.id,
         status: validation.status.status,
         reason: validation.reason,
@@ -1529,7 +1548,14 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         },
         runtimeOutcome: ensuredRuntime.outcome,
       };
-      return { text: runtimeText, replyMode, outcome };
+      return {
+        text:
+          previousProjectId && previousProjectId !== project.id
+            ? `Switched to ${project.name}. ${runtimeText}`
+            : runtimeText,
+        replyMode,
+        outcome,
+      };
     }
 
     await memory.mergeDurableFacts(
@@ -1560,13 +1586,17 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         sessionId: boundSession.sessionId,
         projectId: project.id,
       });
+      const memoryText =
+        replyMode === "voice" && !voiceReply
+          ? buildVoiceFallbackText(memoryBackedText)
+          : memoryBackedText;
       const outcome: OnCallRouteOutcome = {
         type: "success",
         replyMode,
         projectId: project.id,
         projectName: project.name,
         sessionId: boundSession.sessionId,
-        text: memoryBackedText,
+        text: memoryText,
         execution: {
           action: intent.action,
           status: "ok",
@@ -1585,12 +1615,12 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           projectId: project.id,
           type: "outbound_reply",
           mode: voiceReply ? "voice" : "text",
-          text: memoryBackedText,
+          text: memoryText,
           voiceMediaUrl: voiceReply?.mediaUrl,
         }),
       );
       return {
-        text: memoryBackedText,
+        text: memoryText,
         replyMode,
         voiceReply,
         outcome,
@@ -1732,7 +1762,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       const outcome: OnCallRouteOutcome = {
         type: "worker_error",
         replyMode,
-        text: `Worker execution failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        text: `I could not execute that request in the worker for ${project.name}. ${error instanceof Error ? error.message : "Unknown worker failure."}`,
         projectId: project.id,
       };
       await sessions.appendRecentAction(boundSession.sessionId, `worker_error:${intent.action}`);
@@ -1890,7 +1920,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       await memory.compactSessionMemory(boundSession.sessionId, project.id);
     }
 
-    const finalText = buildReply(normalizedResult);
+    const baseFinalText = buildReply(normalizedResult, project.name);
     await sessions.setPhase(
       boundSession.sessionId,
       toSessionPhase(normalizedResult.currentExecutionPhase) ??
@@ -1898,12 +1928,18 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         "reporting",
     );
     const voiceReply = await maybeSynthesizeVoiceReply({
-      responseText: finalText,
+      responseText: baseFinalText,
       replyMode,
       voice,
       sessionId: boundSession.sessionId,
       projectId: project.id,
     });
+
+    const finalText =
+      replyMode === "voice" && !voiceReply ? buildVoiceFallbackText(baseFinalText) : baseFinalText;
+    const switchedProjectPrefix =
+      previousProjectId && previousProjectId !== project.id ? `Switched to ${project.name}. ` : "";
+    const userFacingText = `${switchedProjectPrefix}${finalText}`;
 
     const outcome: OnCallRouteOutcome = {
       type: "success",
@@ -1911,7 +1947,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       projectId: project.id,
       projectName: project.name,
       sessionId: boundSession.sessionId,
-      text: finalText,
+      text: userFacingText,
       execution: {
         action: intent.action,
         status: normalizedResult.status,
@@ -1940,13 +1976,13 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         projectId: project.id,
         type: "outbound_reply",
         mode: voiceReply ? "voice" : "text",
-        text: finalText,
+        text: userFacingText,
         voiceMediaUrl: voiceReply?.mediaUrl,
       }),
     );
 
     return {
-      text: outcome.text,
+      text: userFacingText,
       replyMode,
       voiceReply,
       outcome,
@@ -1980,10 +2016,43 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         ? {
             text: input.transcript.trim(),
             provider: "telegram-transcript",
+            metadata: { source: "telegram", quality: "high", confidence: 1 },
           }
         : await voice.transcribeAudio({
             audioUrl: input.audioUrl ?? "unknown-audio",
           });
+
+      if (isWeakTranscript(transcript.text, transcript.metadata)) {
+        const text =
+          "I could not understand that voice note clearly enough to run anything. Please send a short text command or retry the voice note.";
+        await memory.appendEvent(
+          createEvent({
+            atMs: input.timestampMs,
+            sessionId: session.sessionId,
+            projectId: session.activeProjectId ?? undefined,
+            type: "teleclaw_event",
+            eventType: "execution.errored",
+            message: "Voice transcription missing or low confidence.",
+            details: {
+              provider: transcript.provider,
+              metadata: transcript.metadata,
+            },
+          }),
+        );
+        return {
+          text,
+          replyMode: "text",
+          outcome: {
+            type: "needs_clarification",
+            replyMode: "text",
+            text,
+            candidates: [
+              { id: "retry-voice", name: "retry voice note" },
+              { id: "send-text", name: "send text command" },
+            ],
+          },
+        };
+      }
 
       await memory.appendEvent(
         createEvent({

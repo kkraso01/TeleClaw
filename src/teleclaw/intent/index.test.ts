@@ -88,4 +88,15 @@ describe("resolveOnCallIntent", () => {
 
     expect(intent.approvalIntent.type).toBe("status_query");
   });
+
+  it("maps test status phrasing to status action", () => {
+    const intent = resolveOnCallIntent({
+      channel: "telegram",
+      userId: "u1",
+      body: "did tests pass?",
+      timestampMs: Date.now(),
+    });
+
+    expect(intent.action).toBe("status");
+  });
 });

@@ -73,3 +73,15 @@ See [OnCallDev Runtime Model](/oncalldev-runtime-model), [OnCallDev Container Li
 - TeleClaw now owns and persists normalized execution state for OpenHands runs (phase, install/test/build status, blockers, changed files, next-step hints, and execution timing).
 - Router `status` and `summarize` paths now prefer structured execution state first, with rolling summary as fallback.
 - TeleClaw keeps vendor boundaries intact: OpenHands remains the execution worker, while TeleClaw owns normalization and durable product-facing state.
+
+## Milestone update: end-to-end UX hardening
+
+This milestone focuses on daily usability in Telegram (text + voice) while keeping OpenHands as the worker backend.
+
+Highlights:
+
+- clearer user-facing response mapping for project switching, task start/resume, completion, and failure paths
+- stronger approval conversation prompts and waiting-state answers
+- hardened voice-note handling for missing/weak transcripts
+- explicit voice-reply fallback messaging when TTS is unavailable
+- scenario-level integration coverage for real user journeys

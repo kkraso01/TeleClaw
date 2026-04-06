@@ -40,25 +40,24 @@ async function maybeDispatchOnCallDev(params: {
     return null;
   }
 
-  const response =
-    body?.trim() || !hasVoiceAttachment
-      ? await onCallRouter.processInbound({
-          channel: "telegram",
-          body: body ?? "",
-          userId,
-          sessionKey: params.ctx.SessionKey,
-          transcript: params.ctx.Transcript,
-          timestampMs: Date.now(),
-        })
-      : await onCallRouter.processVoiceInbound({
-          channel: "telegram",
-          body: params.ctx.Transcript ?? "",
-          userId,
-          sessionKey: params.ctx.SessionKey,
-          transcript: params.ctx.Transcript,
-          audioUrl: params.ctx.MediaUrl ?? params.ctx.MediaUrls?.[0],
-          timestampMs: Date.now(),
-        });
+  const response = hasVoiceAttachment
+    ? await onCallRouter.processVoiceInbound({
+        channel: "telegram",
+        body: params.ctx.Transcript ?? "",
+        userId,
+        sessionKey: params.ctx.SessionKey,
+        transcript: params.ctx.Transcript,
+        audioUrl: params.ctx.MediaUrl ?? params.ctx.MediaUrls?.[0],
+        timestampMs: Date.now(),
+      })
+    : await onCallRouter.processInbound({
+        channel: "telegram",
+        body: body ?? "",
+        userId,
+        sessionKey: params.ctx.SessionKey,
+        transcript: params.ctx.Transcript,
+        timestampMs: Date.now(),
+      });
 
   const payload: ReplyPayload = {
     text: response.text,
