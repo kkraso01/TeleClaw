@@ -61,8 +61,9 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 
 - Normalize voice requests through the same router path as text.
 - Persist transcript provider/quality metadata in TeleClaw memory events.
+- Persist outbound voice lifecycle events (`requested`, `generated`, `failed`, `fallback`, `skipped`).
 - Return a clear clarification prompt when transcript quality is missing/weak.
-- Use voice replies when configured; otherwise cleanly fall back to text.
+- Use voice replies when configured (`ENABLE_VOICE_REPLIES=1` + working TTS provider); otherwise cleanly fall back to text.
 
 ### 3) Risky task -> approval request -> natural-language approve/reject -> continue/cancel
 
@@ -89,6 +90,7 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 ## Known limitations after this milestone
 
 - STT now defaults to local `faster-whisper`; alternative STT providers remain TODO behind the same provider seam.
+- TTS currently ships with a single provider integration (`openai`) behind the TeleClaw voice seam.
 - Approval policy remains text-pattern based (not full semantic plan analysis).
 - One pending approval per session remains the supported model.
 - OpenHands internals remain abstracted; TeleClaw continues to normalize worker output heuristically where needed.

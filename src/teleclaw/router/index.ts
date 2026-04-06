@@ -34,7 +34,11 @@ import type {
   OnCallWorkerProgressEvent,
   OnCallWorkerResult,
 } from "../types.js";
-import { createOnCallVoiceService, type OnCallVoiceService } from "../voice/index.js";
+import {
+  createOnCallVoiceService,
+  OnCallVoiceSynthesisProviderError,
+  type OnCallVoiceService,
+} from "../voice/index.js";
 import {
   createOpenHandsAdapter,
   type OnCallWorkerContext,
@@ -145,25 +149,94 @@ async function maybeSynthesizeVoiceReply(params: {
   responseText: string;
   replyMode: "text" | "voice";
   voice: OnCallVoiceService;
+  memory: OnCallMemoryStore;
   sessionId: string;
   projectId?: string;
-}): Promise<OnCallVoiceSynthesisResult | undefined> {
-  if (params.replyMode !== "voice" || process.env.ENABLE_VOICE_REPLIES !== "1") {
-    return undefined;
+}): Promise<{ voiceReply?: OnCallVoiceSynthesisResult; fallbackReason?: string }> {
+  if (params.replyMode !== "voice") {
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "outbound_voice_reply_skipped",
+        reasonCode: "reply_mode_text",
+        reason: "Reply mode resolved to text.",
+      }),
+    );
+    return {};
   }
 
   try {
-    return await params.voice.synthesizeSpeech(params.responseText, {
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "outbound_voice_reply_requested",
+        provider: process.env.TTS_PROVIDER ?? "unknown",
+        voice: process.env.TTS_VOICE,
+        mode: params.replyMode,
+        textPreview: params.responseText.slice(0, 120),
+      }),
+    );
+    const voiceReply = await params.voice.synthesizeSpeech(params.responseText, {
       sessionId: params.sessionId,
       projectId: params.projectId,
     });
-  } catch {
-    return undefined;
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "outbound_voice_reply_generated",
+        provider: voiceReply.provider,
+        voice: voiceReply.voice,
+        mediaUrl: voiceReply.mediaUrl,
+        format: voiceReply.format,
+        durationMs: voiceReply.durationMs,
+      }),
+    );
+    return { voiceReply };
+  } catch (error) {
+    const typed =
+      error instanceof OnCallVoiceSynthesisProviderError
+        ? error
+        : new OnCallVoiceSynthesisProviderError({
+            code: "tts_provider_failed",
+            message: error instanceof Error ? error.message : "Unknown TTS failure.",
+            cause: error,
+          });
+    const fallbackReason = `${typed.code}: ${typed.message}`;
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "outbound_voice_reply_failed",
+        provider: typed.provider,
+        voice: typed.voice,
+        reasonCode: typed.code,
+        reason: fallbackReason,
+      }),
+    );
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "outbound_voice_reply_fallback_text",
+        reasonCode: typed.code,
+        reason: fallbackReason,
+      }),
+    );
+    return { fallbackReason };
   }
 }
 
-function buildVoiceFallbackText(baseText: string): string {
-  return `${baseText}\n\n(Voice reply was unavailable, so I sent text.)`;
+function buildVoiceFallbackText(baseText: string, reason?: string): string {
+  const reasonText = reason ? ` Reason: ${reason}.` : "";
+  return `${baseText}\n\n(Voice reply was unavailable, so I sent text.${reasonText})`;
 }
 
 async function invokeWorker(params: {
@@ -1594,16 +1667,17 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     });
 
     if (memoryBackedText) {
-      const voiceReply = await maybeSynthesizeVoiceReply({
+      const { voiceReply, fallbackReason } = await maybeSynthesizeVoiceReply({
         responseText: memoryBackedText,
         replyMode,
         voice,
+        memory,
         sessionId: boundSession.sessionId,
         projectId: project.id,
       });
       const memoryText =
         replyMode === "voice" && !voiceReply
-          ? buildVoiceFallbackText(memoryBackedText)
+          ? buildVoiceFallbackText(memoryBackedText, fallbackReason)
           : memoryBackedText;
       const outcome: OnCallRouteOutcome = {
         type: "success",
@@ -1942,16 +2016,19 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         normalizedResult.phase ??
         "reporting",
     );
-    const voiceReply = await maybeSynthesizeVoiceReply({
+    const { voiceReply, fallbackReason } = await maybeSynthesizeVoiceReply({
       responseText: baseFinalText,
       replyMode,
       voice,
+      memory,
       sessionId: boundSession.sessionId,
       projectId: project.id,
     });
 
     const finalText =
-      replyMode === "voice" && !voiceReply ? buildVoiceFallbackText(baseFinalText) : baseFinalText;
+      replyMode === "voice" && !voiceReply
+        ? buildVoiceFallbackText(baseFinalText, fallbackReason)
+        : baseFinalText;
     const switchedProjectPrefix =
       previousProjectId && previousProjectId !== project.id ? `Switched to ${project.name}. ` : "";
     const userFacingText = `${switchedProjectPrefix}${finalText}`;

@@ -61,7 +61,7 @@ async function maybeDispatchOnCallDev(params: {
 
   const payload: ReplyPayload = {
     text: response.text,
-    audioAsVoice: response.replyMode === "voice",
+    audioAsVoice: response.replyMode === "voice" && Boolean(response.voiceReply?.mediaUrl),
     mediaUrl: response.voiceReply?.mediaUrl,
   };
   await params.dispatcherOptions.deliver(payload, { kind: "final" });

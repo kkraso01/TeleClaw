@@ -452,6 +452,58 @@ export type OnCallMemoryEvent =
       atMs: number;
       sessionId: string;
       projectId?: string;
+      type: "outbound_voice_reply_requested";
+      provider: string;
+      voice?: string;
+      mode: OnCallReplyMode;
+      textPreview: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
+      type: "outbound_voice_reply_generated";
+      provider: string;
+      voice?: string;
+      mediaUrl: string;
+      format?: string;
+      durationMs?: number;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
+      type: "outbound_voice_reply_failed";
+      provider?: string;
+      voice?: string;
+      reasonCode: string;
+      reason: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
+      type: "outbound_voice_reply_fallback_text";
+      reasonCode: string;
+      reason: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
+      type: "outbound_voice_reply_skipped";
+      reasonCode: string;
+      reason: string;
+    }
+  | {
+      id: string;
+      atMs: number;
+      sessionId: string;
+      projectId?: string;
       type: "outbound_reply";
       mode: OnCallReplyMode;
       text: string;
@@ -483,7 +535,29 @@ export type OnCallVoiceTranscriptResult = {
 export type OnCallVoiceSynthesisResult = {
   mediaUrl: string;
   provider: string;
+  voice?: string;
+  format?: string;
+  durationMs?: number;
+  artifactPath?: string;
   metadata?: Record<string, unknown>;
+};
+
+export type OnCallVoiceSynthesisErrorCode =
+  | "tts_disabled"
+  | "tts_provider_missing"
+  | "tts_provider_not_supported"
+  | "tts_provider_not_configured"
+  | "tts_provider_unavailable"
+  | "tts_provider_failed"
+  | "tts_artifact_write_failed"
+  | "tts_artifact_missing";
+
+export type OnCallVoiceSynthesisError = {
+  code: OnCallVoiceSynthesisErrorCode;
+  message: string;
+  provider?: string;
+  voice?: string;
+  cause?: string;
 };
 
 export type OnCallWorkerResult = {

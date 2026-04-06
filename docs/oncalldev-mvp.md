@@ -14,7 +14,7 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - `src/teleclaw/memory`: event log + rolling summary + structured state + durable facts.
 - `src/teleclaw/approvals`: TeleClaw-owned pending approval records and approval status rendering.
 - `src/teleclaw/worker/adapter.ts`: OpenHands adapter (`runTask`, `resume`, `getStatus`, `summarize`) with project context payloads.
-- `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime, with local `faster-whisper` as the default STT provider.
+- `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime, with local `faster-whisper` as the default STT provider and optional `openai` TTS provider for outbound voice replies.
 - `src/teleclaw/router`: enforcing orchestration for intent, session/project binding, policy checks, and worker execution.
 - `src/teleclaw/policy`: boundary enforcement for project isolation and execution safety.
 
@@ -51,7 +51,7 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 ## Known MVP TODOs
 
 - Replace file-backed project/session stores with SQLite when migration and deploy footprint are acceptable.
-- Expand local STT provider coverage beyond `faster-whisper` and finish production TTS integration/media persistence.
+- Expand STT/TTS provider coverage beyond the current `faster-whisper` + `openai` baseline while keeping fallback-safe behavior.
 - Add explicit project authorization policy per Telegram user.
 - Add health probes for OpenHands project containers.
 - Expand channel-visible progress updates for long-running worker tasks.
@@ -83,5 +83,5 @@ Highlights:
 - clearer user-facing response mapping for project switching, task start/resume, completion, and failure paths
 - stronger approval conversation prompts and waiting-state answers
 - hardened voice-note handling for missing/weak transcripts
-- explicit voice-reply fallback messaging when TTS is unavailable
+- real optional voice-reply generation with explicit fallback messaging when TTS is unavailable
 - scenario-level integration coverage for real user journeys

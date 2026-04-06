@@ -16,7 +16,7 @@ Observed behavior before the real provider work:
 - If STT was unavailable or not implemented, transcript was empty and routing fell back to clarification.
 - TTS failures were swallowed and replies were returned as text.
 
-The primary gap was real local speech-to-text inference.
+The primary gap was real TTS generation for outbound voice replies.
 
 ## Target path in this milestone
 
@@ -30,6 +30,7 @@ The primary gap was real local speech-to-text inference.
 5. Router writes `inbound_voice_transcript` with transcript metadata.
 6. Transcript is routed through the same intent/session/project flow as text.
 7. Optional voice reply is attempted only when enabled; text fallback remains default-safe.
+8. Voice reply lifecycle events are persisted for debugging and operations.
 
 ## STT provider behavior
 
@@ -40,6 +41,24 @@ The primary gap was real local speech-to-text inference.
 - Model controls: `STT_MODEL`, `STT_DEVICE`, `STT_COMPUTE_TYPE`
 - Quality controls: `STT_VAD_FILTER`, `STT_MIN_CONFIDENCE`, `STT_BEAM_SIZE`
 - Timeout control: `STT_PROVIDER_TIMEOUT_MS`
+
+## TTS provider strategy (this milestone)
+
+TeleClaw now uses a real provider path for TTS behind `src/teleclaw/voice`:
+
+- Provider id: `openai`
+- Transport: HTTPS `POST /audio/speech`
+- Required env: `TTS_PROVIDER=openai`, `TTS_API_KEY`
+- Optional env:
+  - `TTS_BASE_URL` (defaults to `https://api.openai.com/v1`)
+  - `TTS_MODEL` (defaults to `gpt-4o-mini-tts`)
+  - `TTS_VOICE` (defaults to `alloy`)
+  - `TTS_FORMAT` (defaults to `mp3`)
+  - `TTS_OUTPUT_DIR` (defaults to `~/.openclaw/teleclaw/voice`)
+  - `TTS_PROVIDER_TIMEOUT_MS` (defaults to `30000`)
+  - `ENABLE_VOICE_REPLIES=1` to enable outbound voice synthesis
+
+Generated TTS artifacts are persisted in a predictable local directory and returned to Telegram through existing media reply flow using the artifact path.
 
 ## Fallback behavior
 
@@ -54,10 +73,12 @@ TeleClaw always preserves text usability.
   - returns explicit temporary-failure message and text fallback guidance
 - Voice reply unavailable / disabled / TTS failure:
   - returns text reply with concise fallback note
+  - persists reason-coded events (`outbound_voice_reply_failed`, `outbound_voice_reply_fallback_text`)
 
 ## Known limitations after this milestone
 
 - Local faster-whisper requires a Python runtime and installed package (`pip install faster-whisper`).
 - Telegram voice URL fetching depends on runtime ability to fetch the attachment URL.
-- TTS remains optional and still uses a placeholder synthesis implementation.
+- TTS is optional and defaults to off unless explicitly enabled.
+- OpenAI TTS requires network access and an API key; when unavailable, TeleClaw falls back to text.
 - Confidence is derived from Whisper signals (`avg_logprob`, `no_speech_prob`), not a universal probability metric.
