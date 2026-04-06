@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { createOnCallVoiceService } from "./index.js";
 
 describe("createOnCallVoiceService", () => {
@@ -120,8 +123,57 @@ describe("createOnCallVoiceService", () => {
     expect(transcript.metadata).toMatchObject({ reason: "stt_provider_not_supported" });
   });
 
-  it("throws when tts provider is not configured", async () => {
-    const voice = createOnCallVoiceService({ ttsProvider: undefined, ttsApiKey: undefined });
-    await expect(voice.synthesizeSpeech("hello")).rejects.toThrow("tts not configured");
+  it("returns disabled error when voice replies are not enabled", async () => {
+    const voice = createOnCallVoiceService({
+      enableVoiceReplies: false,
+      ttsProvider: "openai",
+      ttsApiKey: "sk-test",
+    });
+    await expect(voice.synthesizeSpeech("hello")).rejects.toMatchObject({
+      code: "tts_disabled",
+    });
+  });
+
+  it("uses openai provider when configured and writes an audio artifact", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-tts-"));
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new TextEncoder().encode("voice-bytes").buffer,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const voice = createOnCallVoiceService({
+      enableVoiceReplies: true,
+      ttsProvider: "openai",
+      ttsApiKey: "sk-test",
+      ttsModel: "gpt-4o-mini-tts",
+      ttsVoice: "alloy",
+      ttsFormat: "mp3",
+      ttsOutputDir: tmpDir,
+      ttsBaseUrl: "https://api.openai.com/v1",
+      ttsProviderTimeoutMs: 1000,
+    });
+
+    const result = await voice.synthesizeSpeech("status update: tests are green");
+
+    expect(result.provider).toBe("openai");
+    expect(result.voice).toBe("alloy");
+    expect(result.format).toBe("mp3");
+    expect(result.mediaUrl).toContain(tmpDir);
+    expect(fetchMock).toHaveBeenCalled();
+    const stored = await readFile(result.mediaUrl, "utf8");
+    expect(stored).toBe("voice-bytes");
+    vi.unstubAllGlobals();
+  });
+
+  it("returns unsupported error for unknown TTS providers", async () => {
+    const voice = createOnCallVoiceService({
+      enableVoiceReplies: true,
+      ttsProvider: "unknown-tts",
+      ttsApiKey: "k",
+    });
+    await expect(voice.synthesizeSpeech("hello")).rejects.toMatchObject({
+      code: "tts_provider_not_supported",
+    });
   });
 });

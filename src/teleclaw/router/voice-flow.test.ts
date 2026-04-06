@@ -40,7 +40,10 @@ function baseProject() {
   };
 }
 
-function buildRouter(overrides?: { transcribeAudio?: ReturnType<typeof vi.fn> }) {
+function buildRouter(overrides?: {
+  transcribeAudio?: ReturnType<typeof vi.fn>;
+  synthesizeSpeech?: ReturnType<typeof vi.fn>;
+}) {
   const appendEvent = vi.fn().mockResolvedValue(undefined);
   const project = baseProject();
   const router = createOnCallRouter({
@@ -72,7 +75,28 @@ function buildRouter(overrides?: { transcribeAudio?: ReturnType<typeof vi.fn> })
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }),
-      bindProject: vi.fn().mockResolvedValue(null),
+      bindProject: vi.fn().mockImplementation(async (_sessionId: string, projectId: string) => ({
+        sessionId: "session:chat",
+        chatId: "chat",
+        userId: "u1",
+        activeProjectId: projectId,
+        workerBinding: {
+          workerType: "openhands",
+          workerSessionId: null,
+          containerId: null,
+          containerName: null,
+        },
+        currentPhase: "idle",
+        summary: "",
+        durableFacts: [],
+        structuredState: {},
+        recentActions: [],
+        artifactRefs: [],
+        pendingApproval: null,
+        lastActiveAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })),
       bindWorker: vi.fn().mockResolvedValue(null),
       appendRecentAction: vi.fn().mockResolvedValue(null),
       setSummary: vi.fn().mockResolvedValue(null),
@@ -143,7 +167,8 @@ function buildRouter(overrides?: { transcribeAudio?: ReturnType<typeof vi.fn> })
           provider: "faster-whisper",
           metadata: { quality: "high", confidence: 0.92, language: "en" },
         }),
-      synthesizeSpeech: vi.fn().mockRejectedValue(new Error("tts disabled")),
+      synthesizeSpeech:
+        overrides?.synthesizeSpeech ?? vi.fn().mockRejectedValue(new Error("tts disabled")),
     } as never,
   });
   return { router, appendEvent };
@@ -168,5 +193,68 @@ describe("TeleClaw voice flow", () => {
         metadata: expect.objectContaining({ quality: "high", confidence: 0.92 }),
       }),
     );
+  });
+
+  it("persists voice failure and fallback events when TTS synthesis fails", async () => {
+    vi.stubEnv("DEFAULT_REPLY_MODE", "voice");
+    const { router, appendEvent } = buildRouter({
+      synthesizeSpeech: vi.fn().mockRejectedValue(new Error("provider down")),
+    });
+
+    const response = await router.processVoiceInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat",
+      transcript: "status",
+      audioUrl: "https://voice.test/fallback.ogg",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.text).toContain("Voice reply was unavailable");
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "outbound_voice_reply_requested" }),
+    );
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "outbound_voice_reply_failed",
+        reasonCode: "tts_provider_failed",
+      }),
+    );
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "outbound_voice_reply_fallback_text",
+      }),
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it("persists generated voice-reply events when synthesis succeeds", async () => {
+    vi.stubEnv("DEFAULT_REPLY_MODE", "voice");
+    const { router, appendEvent } = buildRouter({
+      synthesizeSpeech: vi.fn().mockResolvedValue({
+        mediaUrl: "/tmp/voice.mp3",
+        provider: "openai",
+        voice: "alloy",
+        format: "mp3",
+      }),
+    });
+
+    const response = await router.processVoiceInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat",
+      transcript: "status",
+      audioUrl: "https://voice.test/generated.ogg",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.voiceReply?.mediaUrl).toBe("/tmp/voice.mp3");
+    expect(appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "outbound_voice_reply_generated",
+        provider: "openai",
+      }),
+    );
+    vi.unstubAllEnvs();
   });
 });
