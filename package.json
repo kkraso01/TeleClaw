@@ -1044,6 +1044,8 @@
     "runtime-sidecars:gen": "node --import tsx scripts/generate-runtime-sidecar-paths-baseline.ts --write",
     "stage:bundled-plugin-runtime-deps": "node scripts/stage-bundled-plugin-runtime-deps.mjs",
     "start": "node scripts/run-node.mjs",
+    "teleclaw:test": "pnpm test src/teleclaw/router/e2e-flows.test.ts src/teleclaw/router/voice-flow.test.ts src/teleclaw/voice/index.test.ts",
+    "teleclaw:voice:test": "pnpm test src/teleclaw/voice/index.test.ts src/teleclaw/voice/providers/stt-whispercpp.test.ts src/teleclaw/voice/providers/tts-piper.test.ts src/teleclaw/voice/providers/stt-whispercpp.integration.test.ts src/teleclaw/voice/providers/tts-piper.integration.test.ts",
     "test": "node scripts/run-vitest.mjs run --config vitest.config.ts",
     "test:all": "pnpm lint && pnpm build && pnpm test && pnpm test:e2e && pnpm test:live && pnpm test:docker:all",
     "test:auth:compat": "node scripts/run-vitest.mjs run --config vitest.gateway.config.ts src/gateway/server.auth.compat-baseline.test.ts src/gateway/client.test.ts src/gateway/reconnect-gating.test.ts src/gateway/protocol/connect-error-details.test.ts",

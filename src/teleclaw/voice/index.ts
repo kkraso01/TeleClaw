@@ -45,6 +45,8 @@ export type OnCallVoiceServiceConfig = {
   ttsPiperBin?: string;
   ttsPiperModel?: string;
   ttsPiperVoice?: string;
+  ttsOutputTtlSeconds?: number;
+  ttsOutputMaxFiles?: number;
   enableVoiceReplies?: boolean;
 };
 
@@ -133,6 +135,8 @@ function defaultConfig(): OnCallVoiceServiceConfig {
     ttsPiperBin: process.env.TTS_PIPER_BIN ?? "piper",
     ttsPiperModel: process.env.TTS_PIPER_MODEL,
     ttsPiperVoice: process.env.TTS_PIPER_VOICE,
+    ttsOutputTtlSeconds: parseInteger(process.env.TTS_OUTPUT_TTL_SECONDS, 7 * 24 * 60 * 60),
+    ttsOutputMaxFiles: parseInteger(process.env.TTS_OUTPUT_MAX_FILES, 500),
     enableVoiceReplies: parseBoolean(process.env.ENABLE_VOICE_REPLIES, false),
   };
 }
