@@ -41,17 +41,32 @@ export function createOnCallVoiceService(
         return {
           text: input.transcriptHint.trim(),
           provider: "telegram-transcript",
-          metadata: { source: "hint" },
+          metadata: { source: "hint", quality: "high", confidence: 1 },
+        };
+      }
+
+      if (!resolved.sttProvider || !resolved.sttApiKey) {
+        return {
+          text: "",
+          provider: resolved.sttProvider ?? "mock-stt",
+          metadata: {
+            configuredProvider: resolved.sttProvider ?? null,
+            hasApiKey: Boolean(resolved.sttApiKey),
+            quality: "missing",
+            reason: "stt_unavailable",
+          },
         };
       }
 
       // TODO(teleclaw): Add production STT provider integration (for example Whisper or provider plugin) once deployment secrets are available.
       return {
-        text: `transcript unavailable for ${input.audioUrl}`,
-        provider: resolved.sttProvider ?? "mock-stt",
+        text: "",
+        provider: resolved.sttProvider,
         metadata: {
-          configuredProvider: resolved.sttProvider ?? null,
+          configuredProvider: resolved.sttProvider,
           hasApiKey: Boolean(resolved.sttApiKey),
+          quality: "missing",
+          reason: "provider_not_implemented",
         },
       };
     },

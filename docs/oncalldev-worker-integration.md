@@ -110,3 +110,9 @@ This happens in TeleClaw policy + router layers (not Telegram handler code).
 2. Avoid broad imports of `vendor/openhands` in other modules.
 3. If vendor patching is required, keep it minimal and document in `vendor/openhands/UPSTREAM.md`.
 4. Re-run focused TeleClaw worker + router tests after vendor updates.
+
+## End-to-end UX hardening updates
+
+- Router now maps worker and runtime outcomes into concise Telegram-friendly responses.
+- Worker error and test-failure responses now favor user-facing explanations over raw vendor wording.
+- Project switch context is surfaced in final responses where useful (for example, “Switched to Billing ...”).
