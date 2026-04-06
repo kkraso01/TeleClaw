@@ -25,6 +25,7 @@ Each session can keep both session-wide and project-scoped memory slices.
    - worker progress
    - worker summaries
    - policy blocks
+   - approval requested/decision/lifecycle
    - outbound replies
    - compaction events
 
@@ -77,3 +78,5 @@ TeleClaw now persists runtime lifecycle events (`runtime.ensure_requested`, `run
 ## Additional durable events
 
 Memory now persists bootstrap, repo lifecycle, and execution stage events (for example `project.created`, `repo.inspected`, `execution.test_finished`).
+
+Approval lifecycle events are also persisted (`approval_granted`, `approval_rejected`, `approval_resumed`, `approval_missing`, `approval_query_answered`) so status questions can be answered from durable state.

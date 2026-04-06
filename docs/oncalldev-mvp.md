@@ -12,6 +12,7 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - `src/teleclaw/projects`: persistent project registry and safe project resolution.
 - `src/teleclaw/sessions`: durable session binding (`chat/session -> active project -> worker context`).
 - `src/teleclaw/memory`: event log + rolling summary + structured state + durable facts.
+- `src/teleclaw/approvals`: TeleClaw-owned pending approval records and approval status rendering.
 - `src/teleclaw/worker/adapter.ts`: OpenHands adapter (`runTask`, `resume`, `getStatus`, `summarize`) with project context payloads.
 - `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime.
 - `src/teleclaw/router`: enforcing orchestration for intent, session/project binding, policy checks, and worker execution.
