@@ -21,6 +21,7 @@ Each session stores:
 - worker binding: `workerType`, `workerSessionId`, `containerId`
 - phase: `idle`, `intake`, `planning`, `implementing`, `testing`, `blocked`, `awaiting_approval`, `reporting`, `paused`
 - memory pointers: `summary`, `durableFacts`, `structuredState`, `recentActions`, `artifactRefs`
+- approval state: `pendingApproval` (durable pause/resume control record)
 - audit timestamps: `lastActiveAt`, `createdAt`, `updatedAt`
 
 ## Lifecycle behavior
@@ -63,3 +64,14 @@ Session `activeProjectId` remains the canonical project pointer for runtime atta
 ## Execution lifecycle state
 
 Session structured state now tracks install/test/build status and latest blocker/summary hints from execution progress.
+
+## Pending approval model
+
+`pendingApproval` is TeleClaw-owned and durable. It stores:
+
+- `approvalId`, `sessionId`, `projectId`
+- `originalInstruction`
+- normalized action summary and risk reason
+- approval classification details
+- worker/runtime context snapshots
+- lifecycle timestamps and status (`pending`, `approved`, `rejected`, `expired`, `resumed`)

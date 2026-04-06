@@ -2,11 +2,21 @@ export type OnCallReplyMode = "text" | "voice";
 
 export type OnCallAction = "task" | "resume" | "status" | "summarize";
 
+export type OnCallApprovalDecision = "approve" | "reject";
+export type OnCallApprovalIntentType = "decision" | "status_query" | "none";
+
+export type OnCallApprovalIntent = {
+  type: OnCallApprovalIntentType;
+  decision?: OnCallApprovalDecision;
+  ambiguous?: boolean;
+};
+
 export type OnCallIntent = {
   action: OnCallAction;
   projectRef?: string;
   instruction: string;
   replyMode: OnCallReplyMode;
+  approvalIntent: OnCallApprovalIntent;
 };
 
 export type OnCallInput = {
@@ -112,9 +122,40 @@ export type OnCallSessionState = {
   structuredState: Record<string, unknown>;
   recentActions: string[];
   artifactRefs: string[];
+  pendingApproval: OnCallPendingApproval | null;
   lastActiveAt: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type OnCallPendingApprovalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "resumed";
+
+export type OnCallPendingApproval = {
+  approvalId: string;
+  sessionId: string;
+  projectId: string;
+  originalInstruction: string;
+  normalizedActionSummary: string;
+  riskReason: string;
+  classification: OnCallApprovalClassification;
+  workerContextSnapshot: {
+    workerType: string;
+    workerSessionId: string | null;
+  };
+  runtimeContextSnapshot: {
+    containerId: string | null;
+    containerName: string | null;
+    runtimeFamily: string | null;
+    workspacePath: string;
+  };
+  createdAt: string;
+  decidedAt?: string;
+  status: OnCallPendingApprovalStatus;
 };
 
 export type OnCallDurableFacts = {
@@ -208,7 +249,12 @@ export type OnCallExecutionEventType =
   | "execution.test_finished"
   | "execution.build_started"
   | "execution.build_finished"
-  | "execution.blocked";
+  | "execution.blocked"
+  | "approval_granted"
+  | "approval_rejected"
+  | "approval_resumed"
+  | "approval_missing"
+  | "approval_query_answered";
 
 export type OnCallMemoryEvent =
   | {
@@ -331,10 +377,12 @@ export type OnCallMemoryEvent =
       sessionId: string;
       projectId: string;
       type: "approval_requested";
+      approvalId: string;
       instruction: string;
       reason: string;
       matchedRule: OnCallApprovalClassification["matchedRule"];
       riskLevel: OnCallApprovalRiskLevel;
+      actionSummary: string;
     }
   | {
       id: string;
@@ -500,4 +548,45 @@ export type OnCallRouteOutcome =
       text: string;
       projectId: string;
       approval: OnCallApprovalClassification;
+      approvalId: string;
+      actionSummary: string;
+      requestedAt: string;
+    }
+  | {
+      type: "approval_resumed";
+      replyMode: OnCallReplyMode;
+      text: string;
+      projectId: string;
+      approvalId: string;
+      resumedExecution: {
+        status: "ok" | "error";
+        outcomeType: OnCallRouteOutcome["type"];
+      };
+    }
+  | {
+      type: "approval_rejected";
+      replyMode: OnCallReplyMode;
+      text: string;
+      projectId: string;
+      approvalId: string;
+      actionSummary: string;
+      requestedAt: string;
+    }
+  | {
+      type: "approval_missing";
+      replyMode: OnCallReplyMode;
+      text: string;
+    }
+  | {
+      type: "approval_status";
+      replyMode: OnCallReplyMode;
+      text: string;
+      pendingApproval: {
+        projectId: string;
+        approvalId: string;
+        reason: string;
+        actionSummary: string;
+        requestedAt: string;
+        status: OnCallPendingApprovalStatus;
+      } | null;
     };

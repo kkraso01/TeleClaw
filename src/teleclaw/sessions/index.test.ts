@@ -13,6 +13,33 @@ describe("createOnCallSessionManager", () => {
     const created = await sessions.getOrCreateSession("chat-1", "user-1");
 
     await sessions.bindProject(created.sessionId, "frontend");
+    await sessions.setPendingApproval(created.sessionId, {
+      approvalId: "approval:1",
+      sessionId: created.sessionId,
+      projectId: "frontend",
+      originalInstruction: "delete old files",
+      normalizedActionSummary: "Delete old files",
+      riskReason: "Potentially destructive file deletion.",
+      classification: {
+        decision: "requires_approval",
+        reason: "Potentially destructive file deletion.",
+        matchedRule: "delete_files",
+        riskLevel: "high",
+        requiresExplicitApproval: true,
+      },
+      workerContextSnapshot: {
+        workerType: "openhands",
+        workerSessionId: null,
+      },
+      runtimeContextSnapshot: {
+        containerId: "ctr-1",
+        containerName: "teleclaw-frontend",
+        runtimeFamily: "node",
+        workspacePath: "/tmp/workspace/frontend",
+      },
+      createdAt: new Date().toISOString(),
+      status: "pending",
+    });
     await sessions.setSummary(created.sessionId, "Front-end refactor in progress");
     await sessions.setStructuredState(created.sessionId, { branch: "feat/ui" });
 
@@ -20,6 +47,7 @@ describe("createOnCallSessionManager", () => {
     const loaded = await reloaded.getSessionById(created.sessionId);
 
     expect(loaded?.activeProjectId).toBe("frontend");
+    expect(loaded?.pendingApproval?.status).toBe("pending");
     expect(loaded?.summary).toContain("refactor");
     expect(loaded?.structuredState).toMatchObject({ branch: "feat/ui" });
   });

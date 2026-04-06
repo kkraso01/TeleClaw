@@ -1,6 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { OnCallSessionPhase, OnCallSessionState, OnCallWorkerBinding } from "../types.js";
+import type {
+  OnCallPendingApproval,
+  OnCallSessionPhase,
+  OnCallSessionState,
+  OnCallWorkerBinding,
+} from "../types.js";
 
 const DEFAULT_SESSIONS_FILENAME = "sessions.json";
 
@@ -22,6 +27,10 @@ export type OnCallSessionManager = {
   setStructuredState: (
     sessionId: string,
     structuredState: Record<string, unknown>,
+  ) => Promise<OnCallSessionState | null>;
+  setPendingApproval: (
+    sessionId: string,
+    pendingApproval: OnCallPendingApproval | null,
   ) => Promise<OnCallSessionState | null>;
 };
 
@@ -78,6 +87,7 @@ function createDefaultSession(chatId: string, userId?: string | null): OnCallSes
     structuredState: {},
     recentActions: [],
     artifactRefs: [],
+    pendingApproval: null,
     lastActiveAt: now,
     createdAt: now,
     updatedAt: now,
@@ -187,6 +197,13 @@ export function createOnCallSessionManager(
           ...session.structuredState,
           ...structuredState,
         },
+      }));
+    },
+
+    async setPendingApproval(sessionId, pendingApproval) {
+      return await this.updateSession(sessionId, (session) => ({
+        ...session,
+        pendingApproval,
       }));
     },
   };

@@ -1,3 +1,8 @@
+import {
+  createPendingApproval,
+  renderApprovalPrompt,
+  renderPendingApprovalStatus,
+} from "../approvals/index.js";
 import { resolveOnCallIntent } from "../intent/index.js";
 import { createOnCallMemoryStore, type OnCallMemoryStore } from "../memory/index.js";
 import {
@@ -62,6 +67,9 @@ type OnCallRouterDeps = {
 const defaultAdapter = createOpenHandsAdapter();
 
 type RuntimeIntent = "start" | "stop" | "restart" | "status" | null;
+type ProcessOptions = {
+  bypassApprovalId?: string;
+};
 
 function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" {
   if (requested === "voice") {
@@ -70,11 +78,11 @@ function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" 
   return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
 }
 
-function createEvent<TEvent extends OnCallMemoryEvent>(event: Omit<TEvent, "id">): TEvent {
+function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
   return {
     ...event,
     id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
-  } as TEvent;
+  };
 }
 
 function resolveRuntimeIntent(instruction: string): RuntimeIntent {
@@ -351,7 +359,10 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
   const voice = deps.voice ?? createOnCallVoiceService();
   const runtime = deps.runtime ?? createOnCallRuntimeController({ projects });
 
-  async function processNormalized(input: OnCallInput): Promise<OnCallRouterResponse> {
+  async function processNormalized(
+    input: OnCallInput,
+    options: ProcessOptions = {},
+  ): Promise<OnCallRouterResponse> {
     const intent = resolveOnCallIntent(input);
     const runtimeIntent = resolveRuntimeIntent(intent.instruction);
     const replyMode = resolveDefaultReplyMode(intent.replyMode);
@@ -369,6 +380,193 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         userId: input.userId,
       }),
     );
+
+    const activeApproval = session.pendingApproval ?? null;
+    const activePendingApproval = activeApproval?.status === "pending" ? activeApproval : null;
+
+    if (intent.approvalIntent.type === "status_query") {
+      const statusResponse = renderPendingApprovalStatus(activePendingApproval);
+      const outcome: OnCallRouteOutcome = {
+        type: "approval_status",
+        replyMode,
+        text: statusResponse.text,
+        pendingApproval: activePendingApproval
+          ? {
+              projectId: activePendingApproval.projectId,
+              approvalId: activePendingApproval.approvalId,
+              reason: activePendingApproval.riskReason,
+              actionSummary: activePendingApproval.normalizedActionSummary,
+              requestedAt: activePendingApproval.createdAt,
+              status: activePendingApproval.status,
+            }
+          : null,
+      };
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: activePendingApproval?.projectId,
+          type: "teleclaw_event",
+          eventType: "approval_query_answered",
+          message: statusResponse.text,
+        }),
+      );
+      return { text: statusResponse.text, replyMode, outcome };
+    }
+
+    if (intent.approvalIntent.type === "decision") {
+      if (intent.approvalIntent.ambiguous || !intent.approvalIntent.decision) {
+        const text =
+          'I could not tell if you meant approve or reject. Please reply with "approve" or "reject".';
+        const outcome: OnCallRouteOutcome = {
+          type: "needs_clarification",
+          replyMode,
+          text,
+          candidates: [
+            { id: "approve", name: "approve pending action" },
+            { id: "reject", name: "reject pending action" },
+          ],
+        };
+        return { text, replyMode, outcome };
+      }
+
+      if (!activePendingApproval) {
+        const text = "There is no pending approval request to act on.";
+        await memory.appendEvent(
+          createEvent({
+            atMs: Date.now(),
+            sessionId: session.sessionId,
+            type: "teleclaw_event",
+            eventType: "approval_missing",
+            message: text,
+          }),
+        );
+        const outcome: OnCallRouteOutcome = { type: "approval_missing", replyMode, text };
+        return { text, replyMode, outcome };
+      }
+
+      if (intent.approvalIntent.decision === "reject") {
+        const decidedAt = new Date().toISOString();
+        if ("setPendingApproval" in sessions && typeof sessions.setPendingApproval === "function") {
+          await sessions.setPendingApproval(session.sessionId, {
+            ...activePendingApproval,
+            status: "rejected",
+            decidedAt,
+          });
+        }
+        await sessions.setPhase(session.sessionId, "blocked");
+        await sessions.appendRecentAction(session.sessionId, "approval:rejected");
+        await memory.appendEvent(
+          createEvent({
+            atMs: Date.now(),
+            sessionId: session.sessionId,
+            projectId: activePendingApproval.projectId,
+            type: "approval_decision",
+            decision: "rejected",
+            reason: activePendingApproval.riskReason,
+            matchedRule: activePendingApproval.classification.matchedRule,
+          }),
+        );
+        await memory.appendEvent(
+          createEvent({
+            atMs: Date.now(),
+            sessionId: session.sessionId,
+            projectId: activePendingApproval.projectId,
+            type: "teleclaw_event",
+            eventType: "approval_rejected",
+            message: `Approval rejected for action: ${activePendingApproval.normalizedActionSummary}`,
+          }),
+        );
+        const text = `Understood — I canceled the pending action for ${activePendingApproval.projectId}.`;
+        const outcome: OnCallRouteOutcome = {
+          type: "approval_rejected",
+          replyMode,
+          text,
+          projectId: activePendingApproval.projectId,
+          approvalId: activePendingApproval.approvalId,
+          actionSummary: activePendingApproval.normalizedActionSummary,
+          requestedAt: activePendingApproval.createdAt,
+        };
+        return { text, replyMode, outcome };
+      }
+
+      if ("setPendingApproval" in sessions && typeof sessions.setPendingApproval === "function") {
+        await sessions.setPendingApproval(session.sessionId, {
+          ...activePendingApproval,
+          status: "approved",
+          decidedAt: new Date().toISOString(),
+        });
+      }
+      await sessions.appendRecentAction(session.sessionId, "approval:granted");
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: activePendingApproval.projectId,
+          type: "approval_decision",
+          decision: "granted",
+          reason: activePendingApproval.riskReason,
+          matchedRule: activePendingApproval.classification.matchedRule,
+        }),
+      );
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: activePendingApproval.projectId,
+          type: "teleclaw_event",
+          eventType: "approval_granted",
+          message: `Approval granted for action: ${activePendingApproval.normalizedActionSummary}`,
+        }),
+      );
+      await sessions.setPhase(session.sessionId, "planning");
+      const resumed = await processNormalized(
+        {
+          ...input,
+          body: activePendingApproval.originalInstruction,
+          transcript: undefined,
+          timestampMs: Date.now(),
+        },
+        { bypassApprovalId: activePendingApproval.approvalId },
+      );
+      if ("setPendingApproval" in sessions && typeof sessions.setPendingApproval === "function") {
+        await sessions.setPendingApproval(session.sessionId, {
+          ...activePendingApproval,
+          status: "resumed",
+          decidedAt: new Date().toISOString(),
+        });
+      }
+      await memory.appendEvent(
+        createEvent({
+          atMs: Date.now(),
+          sessionId: session.sessionId,
+          projectId: activePendingApproval.projectId,
+          type: "teleclaw_event",
+          eventType: "approval_resumed",
+          message: `Resumed action after approval: ${activePendingApproval.normalizedActionSummary}`,
+        }),
+      );
+      const text =
+        resumed.outcome.type === "success"
+          ? `Approved and resumed: ${resumed.text}`
+          : `Approval was granted, but resume failed: ${resumed.text}`;
+      return {
+        text,
+        replyMode: resumed.replyMode,
+        voiceReply: resumed.voiceReply,
+        outcome: {
+          type: "approval_resumed",
+          replyMode: resumed.replyMode,
+          text,
+          projectId: activePendingApproval.projectId,
+          approvalId: activePendingApproval.approvalId,
+          resumedExecution: {
+            status: resumed.outcome.type === "success" ? "ok" : "error",
+            outcomeType: resumed.outcome.type,
+          },
+        },
+      };
+    }
 
     const projectCreateIntent = parseProjectCreationIntent(intent.instruction);
     if (projectCreateIntent) {
@@ -797,7 +995,11 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
 
     if (intent.action === "task" || intent.action === "resume") {
       const approval = classifyApprovalNeed(intent.instruction);
-      if (approval.decision !== "allowed") {
+      const canBypassApproval =
+        options.bypassApprovalId &&
+        activeApproval?.approvalId === options.bypassApprovalId &&
+        activeApproval.originalInstruction === intent.instruction;
+      if (approval.decision !== "allowed" && !canBypassApproval) {
         const eventType = approval.decision === "blocked" ? "policy_block" : "approval_requested";
         if (eventType === "policy_block") {
           await memory.appendEvent(
@@ -827,22 +1029,38 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           };
         }
 
+        const pendingApproval = createPendingApproval({
+          session: boundSession,
+          projectId: refreshedProject.id,
+          workspacePath: refreshedProject.workspacePath,
+          runtimeFamily: refreshedProject.runtimeFamily,
+          originalInstruction: intent.instruction,
+          classification: approval,
+        });
+        if ("setPendingApproval" in sessions && typeof sessions.setPendingApproval === "function") {
+          await sessions.setPendingApproval(boundSession.sessionId, pendingApproval);
+        }
         await memory.appendEvent(
           createEvent({
             atMs: Date.now(),
             sessionId: boundSession.sessionId,
             projectId: refreshedProject.id,
             type: "approval_requested",
+            approvalId: pendingApproval.approvalId,
             instruction: intent.instruction,
             reason: approval.reason,
             matchedRule: approval.matchedRule,
             riskLevel: approval.riskLevel,
+            actionSummary: pendingApproval.normalizedActionSummary,
           }),
         );
+        await sessions.appendRecentAction(boundSession.sessionId, "approval:requested");
+        await sessions.setStructuredState(boundSession.sessionId, {
+          currentBlocker: approval.reason,
+          nextSuggestedStep: "Reply with approve or reject.",
+        });
         await sessions.setPhase(boundSession.sessionId, "awaiting_approval");
-        const text =
-          `Approval required before executing this action: ${approval.reason}\n` +
-          `Reply with "approve ${refreshedProject.id}" to continue.`;
+        const text = renderApprovalPrompt(pendingApproval);
         return {
           text,
           replyMode,
@@ -852,6 +1070,9 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
             text,
             projectId: refreshedProject.id,
             approval,
+            approvalId: pendingApproval.approvalId,
+            actionSummary: pendingApproval.normalizedActionSummary,
+            requestedAt: pendingApproval.createdAt,
           },
         };
       }

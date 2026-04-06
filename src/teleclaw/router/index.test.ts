@@ -19,6 +19,7 @@ function buildSession(activeProjectId: string | null = null) {
     structuredState: {},
     recentActions: [],
     artifactRefs: [],
+    pendingApproval: null,
     lastActiveAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -552,6 +553,8 @@ describe("createOnCallRouter runtime lifecycle", () => {
         getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
         bindProject: vi.fn().mockResolvedValue(buildSession("billing")),
         setPhase,
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+        setStructuredState: vi.fn().mockResolvedValue(null),
       } as never,
       memory: {
         appendEvent,
@@ -573,5 +576,271 @@ describe("createOnCallRouter runtime lifecycle", () => {
     expect(appendEvent.mock.calls.some((call) => call[0]?.type === "approval_requested")).toBe(
       true,
     );
+  });
+
+  it("approves pending action and safely resumes execution", async () => {
+    const worker = {
+      runTask: vi.fn().mockResolvedValue({ status: "ok", text: "done after approval" }),
+      resume: vi.fn().mockResolvedValue({ status: "ok", text: "resumed" }),
+      getStatus: vi.fn().mockResolvedValue({ status: "ok", text: "status" }),
+      summarize: vi.fn().mockResolvedValue({ status: "ok", text: "summary" }),
+    };
+    const setPendingApproval = vi.fn().mockResolvedValue(null);
+    const appendEvent = vi.fn().mockResolvedValue(undefined);
+    const pendingSession = {
+      ...buildSession("billing"),
+      pendingApproval: {
+        approvalId: "approval:1",
+        sessionId: "session:chat-1",
+        projectId: "billing",
+        originalInstruction: "delete files in billing",
+        normalizedActionSummary: "delete files in billing",
+        riskReason: "Potentially destructive file deletion.",
+        classification: {
+          decision: "requires_approval",
+          reason: "Potentially destructive file deletion.",
+          matchedRule: "delete_files",
+          riskLevel: "high",
+          requiresExplicitApproval: true,
+        },
+        workerContextSnapshot: {
+          workerType: "openhands",
+          workerSessionId: null,
+        },
+        runtimeContextSnapshot: {
+          containerId: null,
+          containerName: null,
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+        },
+        createdAt: new Date().toISOString(),
+        status: "pending" as const,
+      },
+    };
+
+    const router = createOnCallRouter({
+      projects: {
+        resolveProject: vi.fn().mockResolvedValue({
+          type: "resolved",
+          via: "id",
+          project: buildResolvedProject(),
+        }),
+        rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
+      } as never,
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue(pendingSession),
+        bindProject: vi.fn().mockResolvedValue(pendingSession),
+        setPendingApproval,
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+        setPhase: vi.fn().mockResolvedValue(null),
+        bindWorker: vi.fn().mockResolvedValue(null),
+        setStructuredState: vi.fn().mockResolvedValue(null),
+        setSummary: vi.fn().mockResolvedValue(null),
+      } as never,
+      memory: {
+        appendEvent,
+        mergeDurableFacts: vi.fn().mockResolvedValue({}),
+        getSummary: vi.fn().mockResolvedValue(""),
+        getStructuredState: vi.fn().mockResolvedValue({
+          filesChanged: [],
+          testsPassing: [],
+          testsFailing: [],
+          blockers: [],
+        }),
+        setSummary: vi.fn().mockResolvedValue(undefined),
+        compactSessionMemory: vi.fn().mockResolvedValue({ compactedEvents: 0 }),
+      } as never,
+      worker: worker as never,
+      runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
+        ensureProjectRuntime: vi.fn().mockResolvedValue({
+          outcome: "runtime_started",
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+        validateProjectRuntime: vi.fn().mockResolvedValue({
+          ok: true,
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+        startProjectRuntime: vi.fn(),
+        stopProjectRuntime: vi.fn(),
+        restartProjectRuntime: vi.fn(),
+        getProjectRuntime: vi.fn(),
+      } as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "approve",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.outcome.type).toBe("approval_resumed");
+    expect(worker.runTask).toHaveBeenCalledWith(
+      "billing",
+      "delete files in billing",
+      expect.any(Object),
+    );
+    expect(setPendingApproval).toHaveBeenCalled();
+    expect(appendEvent.mock.calls.some((call) => call[0]?.eventType === "approval_resumed")).toBe(
+      true,
+    );
+  });
+
+  it("rejects pending action and does not execute worker", async () => {
+    const worker = {
+      runTask: vi.fn().mockResolvedValue({ status: "ok", text: "done" }),
+      resume: vi.fn().mockResolvedValue({ status: "ok", text: "resumed" }),
+      getStatus: vi.fn().mockResolvedValue({ status: "ok", text: "status" }),
+      summarize: vi.fn().mockResolvedValue({ status: "ok", text: "summary" }),
+    };
+    const router = createOnCallRouter({
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue({
+          ...buildSession("billing"),
+          pendingApproval: {
+            approvalId: "approval:1",
+            sessionId: "session:chat-1",
+            projectId: "billing",
+            originalInstruction: "delete files in billing",
+            normalizedActionSummary: "delete files in billing",
+            riskReason: "Potentially destructive file deletion.",
+            classification: {
+              decision: "requires_approval",
+              reason: "Potentially destructive file deletion.",
+              matchedRule: "delete_files",
+              riskLevel: "high",
+              requiresExplicitApproval: true,
+            },
+            workerContextSnapshot: { workerType: "openhands", workerSessionId: null },
+            runtimeContextSnapshot: {
+              containerId: null,
+              containerName: null,
+              runtimeFamily: "node",
+              workspacePath: `${process.cwd()}/workspace/billing`,
+            },
+            createdAt: new Date().toISOString(),
+            status: "pending" as const,
+          },
+        }),
+        setPendingApproval: vi.fn().mockResolvedValue(null),
+        setPhase: vi.fn().mockResolvedValue(null),
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+      } as never,
+      memory: {
+        appendEvent: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      worker: worker as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "cancel that",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.outcome.type).toBe("approval_rejected");
+    expect(worker.runTask).not.toHaveBeenCalled();
+  });
+
+  it("returns no-pending-approval result for approval command without pending request", async () => {
+    const appendEvent = vi.fn().mockResolvedValue(undefined);
+    const router = createOnCallRouter({
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
+      } as never,
+      memory: {
+        appendEvent,
+      } as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "approve",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.outcome.type).toBe("approval_missing");
+    expect(appendEvent.mock.calls.some((call) => call[0]?.eventType === "approval_missing")).toBe(
+      true,
+    );
+  });
+
+  it("answers pending approval status queries from durable state", async () => {
+    const pendingApproval = {
+      approvalId: "approval:1",
+      sessionId: "session:chat-1",
+      projectId: "billing",
+      originalInstruction: "delete files in billing",
+      normalizedActionSummary: "delete files in billing",
+      riskReason: "Potentially destructive file deletion.",
+      classification: {
+        decision: "requires_approval",
+        reason: "Potentially destructive file deletion.",
+        matchedRule: "delete_files",
+        riskLevel: "high",
+        requiresExplicitApproval: true,
+      },
+      workerContextSnapshot: { workerType: "openhands", workerSessionId: null },
+      runtimeContextSnapshot: {
+        containerId: null,
+        containerName: null,
+        runtimeFamily: "node",
+        workspacePath: `${process.cwd()}/workspace/billing`,
+      },
+      createdAt: new Date().toISOString(),
+      status: "pending" as const,
+    };
+    const router = createOnCallRouter({
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue({
+          ...buildSession("billing"),
+          pendingApproval,
+        }),
+      } as never,
+      memory: {
+        appendEvent: vi.fn().mockResolvedValue(undefined),
+      } as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "what are you waiting for?",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.outcome.type).toBe("approval_status");
+    if (response.outcome.type === "approval_status") {
+      expect(response.outcome.pendingApproval?.projectId).toBe("billing");
+    }
   });
 });
