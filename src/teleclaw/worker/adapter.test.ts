@@ -1,19 +1,31 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const run = vi.fn();
+
+vi.mock("./openhands/config.js", () => ({
+  resolveOpenHandsBridgeConfig: vi.fn(() => ({
+    enabled: true,
+    mode: "vendor_local",
+    endpoint: "http://localhost:3001",
+    vendorPath: "/tmp/vendor/openhands",
+    pythonBin: "python3",
+  })),
+}));
+
+vi.mock("./openhands/index.js", () => ({
+  createOpenHandsBridge: vi.fn(() => ({ run })),
+}));
+
 import { createOpenHandsAdapter } from "./adapter.js";
 
 describe("createOpenHandsAdapter", () => {
-  it("sends project-aware context payload", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: "ok", text: "done" }),
-    });
-    const adapter = createOpenHandsAdapter({
-      baseUrl: "http://localhost:3100",
-      model: "gpt-5.4",
-      llmBaseUrl: "http://llm.local",
-      llmApiKey: "secret",
-      fetchImpl: fetchImpl as never,
-    });
+  beforeEach(() => {
+    run.mockReset();
+  });
+
+  it("routes task requests to bridge with context", async () => {
+    run.mockResolvedValue({ status: "ok", text: "done" });
+    const adapter = createOpenHandsAdapter();
 
     await adapter.runTask("billing", "fix tests", {
       sessionId: "session:chat-1",
@@ -44,56 +56,34 @@ describe("createOpenHandsAdapter", () => {
       structuredState: { branch: "feat/billing" },
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const request = fetchImpl.mock.calls[0]?.[1] as { body: string };
-    const body = JSON.parse(request.body);
-    expect(body).toMatchObject({
-      action: "task",
-      projectId: "billing",
-      instruction: "fix tests",
-      sessionId: "session:chat-1",
-      workerSessionId: "worker-1",
-      workspacePath: "/workspace/billing",
-      containerId: "ctr-billing",
-      containerName: "teleclaw-billing",
-      runtimeFamily: "node",
-      executionProfile: expect.objectContaining({
-        installCommand: "npm install",
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "task",
+        projectId: "billing",
+        instruction: "fix tests",
+        context: expect.objectContaining({
+          workerSessionId: "worker-1",
+          workspacePath: "/workspace/billing",
+        }),
       }),
-      repoMetadata: expect.objectContaining({
-        repoStatus: "clean",
-        branch: "main",
-      }),
-      bootstrapState: expect.objectContaining({
-        bootstrapStatus: "ready",
-      }),
-      llmBaseUrl: "http://llm.local",
-      llmApiKey: "secret",
-      model: "gpt-5.4",
-    });
+    );
   });
 
   it("forwards worker progress events to callback seam", async () => {
     const onProgress = vi.fn();
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: "ok",
-        text: "done",
-        progressEvents: [
-          {
-            atMs: Date.now(),
-            kind: "testing_started",
-            message: "running tests",
-          },
-        ],
-      }),
-    });
-    const adapter = createOpenHandsAdapter({
-      baseUrl: "http://localhost:3100",
-      fetchImpl: fetchImpl as never,
+    run.mockResolvedValue({
+      status: "ok",
+      text: "done",
+      progressEvents: [
+        {
+          atMs: Date.now(),
+          kind: "testing_started",
+          message: "running tests",
+        },
+      ],
     });
 
+    const adapter = createOpenHandsAdapter();
     await adapter.runTask("billing", "run tests", { onProgress });
 
     expect(onProgress).toHaveBeenCalledTimes(1);
