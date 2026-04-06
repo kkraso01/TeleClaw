@@ -11,11 +11,22 @@ export type RepoInspectionResult = {
   isRepo: boolean;
   branch: string | null;
   status: OnCallRepoStatus;
+  dirty: boolean;
+  changedFiles: string[];
+  changedFileCount: number;
   error?: string;
+};
+
+export type RepoChangedFilesState = {
+  branch: string | null;
+  dirty: boolean;
+  changedFiles: string[];
+  changedFileCount: number;
 };
 
 export type RepoModule = {
   inspectRepo: (project: OnCallProject) => Promise<RepoInspectionResult>;
+  getChangedFilesState: (project: OnCallProject) => Promise<RepoChangedFilesState>;
   getRepoStatus: (project: OnCallProject) => Promise<OnCallProjectRepoState>;
   refreshRepoState: (project: OnCallProject) => Promise<OnCallProjectRepoState>;
   cloneRepo: (project: OnCallProject, repoUrl: string) => Promise<OnCallProjectRepoState>;
@@ -50,6 +61,16 @@ async function hasGitDir(workspacePath: string): Promise<boolean> {
   }
 }
 
+function parseChangedFiles(statusOutput: string): string[] {
+  const files = statusOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[A-Z?]{1,2}\s+/, "").trim())
+    .filter(Boolean);
+  return [...new Set(files)].toSorted();
+}
+
 export async function inspectRepo(project: OnCallProject): Promise<RepoInspectionResult> {
   const workspacePath = path.resolve(project.workspacePath);
   const gitAvailable = await hasGit();
@@ -59,6 +80,9 @@ export async function inspectRepo(project: OnCallProject): Promise<RepoInspectio
       isRepo: false,
       branch: null,
       status: "error",
+      dirty: false,
+      changedFiles: [],
+      changedFileCount: 0,
       error: "git_unavailable",
     };
   }
@@ -70,6 +94,9 @@ export async function inspectRepo(project: OnCallProject): Promise<RepoInspectio
       isRepo: false,
       branch: null,
       status: "missing",
+      dirty: false,
+      changedFiles: [],
+      changedFileCount: 0,
     };
   }
 
@@ -77,12 +104,16 @@ export async function inspectRepo(project: OnCallProject): Promise<RepoInspectio
     const branchResult = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], workspacePath);
     const branch = branchResult.stdout.trim() || null;
     const statusResult = await runGit(["status", "--porcelain"], workspacePath);
-    const dirty = statusResult.stdout.trim().length > 0;
+    const changedFiles = parseChangedFiles(statusResult.stdout);
+    const dirty = changedFiles.length > 0;
     return {
       gitAvailable,
       isRepo: true,
       branch,
       status: dirty ? "dirty" : "clean",
+      dirty,
+      changedFiles,
+      changedFileCount: changedFiles.length,
     };
   } catch (error) {
     return {
@@ -90,6 +121,9 @@ export async function inspectRepo(project: OnCallProject): Promise<RepoInspectio
       isRepo: true,
       branch: null,
       status: "error",
+      dirty: false,
+      changedFiles: [],
+      changedFileCount: 0,
       error: error instanceof Error ? error.message : "repo_inspection_failed",
     };
   }
@@ -112,6 +146,16 @@ function toRepoState(
 export function createRepoModule(): RepoModule {
   return {
     inspectRepo,
+
+    async getChangedFilesState(project) {
+      const inspection = await inspectRepo(project);
+      return {
+        branch: inspection.branch,
+        dirty: inspection.dirty,
+        changedFiles: inspection.changedFiles,
+        changedFileCount: inspection.changedFileCount,
+      };
+    },
 
     async getRepoStatus(project) {
       const inspection = await inspectRepo(project);

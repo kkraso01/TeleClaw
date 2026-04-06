@@ -7,9 +7,90 @@ import type {
   OpenHandsBridgeResponse,
 } from "./types.js";
 
+type InferredWorkerSignals = {
+  phase?: OpenHandsBridgeResponse["currentExecutionPhase"];
+  installStatus?: OpenHandsBridgeResponse["installStatus"];
+  testStatus?: OpenHandsBridgeResponse["testStatus"];
+  buildStatus?: OpenHandsBridgeResponse["buildStatus"];
+  blockerReason?: string;
+  nextSuggestedStep?: string;
+  lastErrorSummary?: string;
+  filesChanged: string[];
+  changedFileCount: number;
+};
+
+function inferSignalsFromOutput(output: string): InferredWorkerSignals {
+  const lines = output.split("\n").map((line) => line.trim());
+  const fileMatches = output.match(
+    /(?:^|\s)(?:src|test|tests|docs|packages|apps|extensions|vendor|ui)\/[a-zA-Z0-9._\-/]+/gm,
+  );
+  const filesChanged = [...new Set((fileMatches ?? []).map((entry) => entry.trim()))].toSorted();
+  const lower = output.toLowerCase();
+
+  const blockerLine =
+    lines.find((line) => /(?:blocked|blocker|cannot proceed|waiting for)/i.test(line)) ?? undefined;
+  const nextStepLine =
+    lines.find((line) => /(?:next step|next:|follow-up|todo|remaining)/i.test(line)) ?? undefined;
+
+  let phase: OpenHandsBridgeResponse["currentExecutionPhase"] = "implementing";
+  if (/planning|plan:/.test(lower)) {
+    phase = "planning";
+  } else if (/install|dependency/.test(lower)) {
+    phase = "installing";
+  } else if (/test/.test(lower)) {
+    phase = "testing";
+  } else if (/build/.test(lower)) {
+    phase = "building";
+  } else if (/summary|recap/.test(lower)) {
+    phase = "summarizing";
+  }
+  if (/error|exception|traceback|failed/.test(lower)) {
+    phase = "error";
+  }
+  if (/completed|done|finished successfully/.test(lower)) {
+    phase = "completed";
+  }
+  if (blockerLine) {
+    phase = "blocked";
+  }
+
+  return {
+    phase,
+    installStatus: /install|dependency/.test(lower)
+      ? /error|fail/.test(lower)
+        ? "failed"
+        : /installed|complete|finished|success/.test(lower)
+          ? "succeeded"
+          : "started"
+      : undefined,
+    testStatus: /test/.test(lower)
+      ? /tests?\s+failed|failing test|failed:/.test(lower)
+        ? "failed"
+        : /all tests passed|tests passed|passing/.test(lower)
+          ? "passed"
+          : "started"
+      : undefined,
+    buildStatus: /build/.test(lower)
+      ? /build failed|failed build|error/.test(lower)
+        ? "failed"
+        : /build (?:succeeded|passed|complete)|build complete/.test(lower)
+          ? "succeeded"
+          : "started"
+      : undefined,
+    blockerReason: blockerLine,
+    nextSuggestedStep: nextStepLine,
+    lastErrorSummary: /error|exception|traceback|failed/.test(lower)
+      ? (lines.find((line) => /(error|exception|traceback|failed)/i.test(line)) ?? "Worker error")
+      : undefined,
+    filesChanged,
+    changedFileCount: filesChanged.length,
+  };
+}
+
 function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progressEvents"] {
   const now = Date.now();
   const events: NonNullable<OpenHandsBridgeResponse["progressEvents"]> = [];
+  const inferred = inferSignalsFromOutput(output);
   if (/plan|planning/i.test(output)) {
     events.push({
       atMs: now,
@@ -35,7 +116,9 @@ function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progr
     if (/installed|complete|finished/i.test(output)) {
       events.push({
         atMs: now,
-        kind: "dependency_install_finished",
+        kind: /error|fail/i.test(output)
+          ? "dependency_install_failed"
+          : "dependency_install_finished",
         message: "Dependency install completion observed in OpenHands output.",
       });
     }
@@ -78,6 +161,13 @@ function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progr
         message: "Build completion observed in OpenHands output.",
         phase: "reporting",
       });
+    } else if (/build failed|failed build|build error/i.test(output)) {
+      events.push({
+        atMs: now,
+        kind: "build_failed",
+        message: "Build failure observed in OpenHands output.",
+        phase: "blocked",
+      });
     }
   }
   if (/error|exception|traceback/i.test(output)) {
@@ -86,6 +176,29 @@ function inferProgressFromOutput(output: string): OpenHandsBridgeResponse["progr
       kind: "worker_error",
       message: "OpenHands emitted an error in output.",
       phase: "blocked",
+      errorSummary: inferred.lastErrorSummary,
+      blockerReason: inferred.blockerReason,
+      blockers: inferred.blockerReason ? [inferred.blockerReason] : undefined,
+    });
+  }
+  if (inferred.filesChanged.length > 0) {
+    events.push({
+      atMs: now,
+      kind: "files_changed",
+      message: `Observed ${inferred.filesChanged.length} changed file(s).`,
+      filesChanged: inferred.filesChanged,
+      changedFileCount: inferred.changedFileCount,
+    });
+  }
+  if (inferred.blockerReason) {
+    events.push({
+      atMs: now,
+      kind: "execution_blocked",
+      message: inferred.blockerReason,
+      phase: "blocked",
+      blockerReason: inferred.blockerReason,
+      blockers: [inferred.blockerReason],
+      nextSuggestedStep: inferred.nextSuggestedStep,
     });
   }
   return events;
@@ -179,23 +292,41 @@ async function runVendoredLocal(
       const err = stderr.join("").trim();
       const combined = [out, err].filter(Boolean).join("\n");
       if (code !== 0) {
+        const inferred = inferSignalsFromOutput(combined);
         resolve({
           status: "error",
           text: combined || `OpenHands exited with status ${code ?? -1}.`,
+          currentExecutionPhase: inferred.phase ?? "error",
+          blockerReason: inferred.blockerReason,
+          lastErrorSummary: inferred.lastErrorSummary,
+          filesChanged: inferred.filesChanged,
+          lastKnownChangedFileCount: inferred.changedFileCount,
+          nextSuggestedStep:
+            inferred.nextSuggestedStep ?? "Inspect the failing command output and retry.",
+          installStatus: inferred.installStatus,
+          testStatus: inferred.testStatus,
+          buildStatus: inferred.buildStatus,
           progressEvents: inferProgressFromOutput(combined),
           meta: { mode: "vendor_local", exitCode: code ?? -1 },
         });
         return;
       }
+      const inferred = inferSignalsFromOutput(combined);
       resolve({
         status: "ok",
         text: out || "OpenHands completed task.",
         summary: out || undefined,
         phase: "reporting",
-        blockerReason: undefined,
-        nextSuggestedStep: "Review changes and run any remaining validation.",
+        currentExecutionPhase: inferred.phase ?? "completed",
+        blockerReason: inferred.blockerReason,
+        nextSuggestedStep:
+          inferred.nextSuggestedStep ?? "Review changes and run any remaining validation.",
         workerSessionId: sessionName,
-        filesChanged: [],
+        filesChanged: inferred.filesChanged,
+        lastKnownChangedFileCount: inferred.changedFileCount,
+        installStatus: inferred.installStatus,
+        testStatus: inferred.testStatus,
+        buildStatus: inferred.buildStatus,
         progressEvents: inferProgressFromOutput(combined),
         meta: { mode: "vendor_local", exitCode: 0 },
       });

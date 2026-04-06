@@ -100,4 +100,25 @@ describe("createOnCallMemoryStore", () => {
     expect(loaded.durableFacts.userPreferences).toContain("keep replies concise");
     expect(events.length).toBeLessThanOrEqual(31);
   });
+
+  it("normalizes legacy running/passed status values during structured-state merge", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "teleclaw-memory-"));
+    const storePath = path.join(tmpDir, "memory.json");
+
+    const memory = createOnCallMemoryStore({ storePath });
+    await memory.setStructuredState(
+      "session:1",
+      {
+        installStatus: "running" as never,
+        testStatus: "succeeded" as never,
+        buildStatus: "passed" as never,
+      },
+      "billing",
+    );
+
+    const loaded = await memory.getStructuredState("session:1", "billing");
+    expect(loaded.installStatus).toBe("started");
+    expect(loaded.testStatus).toBe("passed");
+    expect(loaded.buildStatus).toBe("succeeded");
+  });
 });

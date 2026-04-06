@@ -67,3 +67,9 @@ See [OnCallDev Runtime Model](/oncalldev-runtime-model), [OnCallDev Container Li
 - Natural-language project creation/bootstrap is now supported.
 - TeleClaw stores durable repo status and branch metadata per project.
 - TeleClaw stores per-project execution profiles used by worker execution context.
+
+## Milestone update: normalized worker execution state
+
+- TeleClaw now owns and persists normalized execution state for OpenHands runs (phase, install/test/build status, blockers, changed files, next-step hints, and execution timing).
+- Router `status` and `summarize` paths now prefer structured execution state first, with rolling summary as fallback.
+- TeleClaw keeps vendor boundaries intact: OpenHands remains the execution worker, while TeleClaw owns normalization and durable product-facing state.
