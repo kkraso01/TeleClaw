@@ -6,6 +6,7 @@ export type OpenHandsIntegrationMode = "vendor_local" | "remote_http" | "disable
 export type OpenHandsBridgeConfig = {
   enabled: boolean;
   mode: OpenHandsIntegrationMode;
+  remoteFallbackEnabled: boolean;
   endpoint: string;
   apiKey?: string;
   llmBaseUrl?: string;

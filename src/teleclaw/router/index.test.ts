@@ -528,4 +528,50 @@ describe("createOnCallRouter runtime lifecycle", () => {
       ),
     ).toBe(true);
   });
+
+  it("returns approval_required outcome before risky execution", async () => {
+    const worker = {
+      runTask: vi.fn().mockResolvedValue({ status: "ok", text: "done" }),
+      resume: vi.fn().mockResolvedValue({ status: "ok", text: "resumed" }),
+      getStatus: vi.fn().mockResolvedValue({ status: "ok", text: "status" }),
+      summarize: vi.fn().mockResolvedValue({ status: "ok", text: "summary" }),
+    };
+    const appendEvent = vi.fn().mockResolvedValue(undefined);
+    const setPhase = vi.fn().mockResolvedValue(null);
+    const router = createOnCallRouter({
+      projects: {
+        resolveProject: vi.fn().mockResolvedValue({
+          type: "resolved",
+          via: "id",
+          project: buildResolvedProject(),
+        }),
+        rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
+      } as never,
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindProject: vi.fn().mockResolvedValue(buildSession("billing")),
+        setPhase,
+      } as never,
+      memory: {
+        appendEvent,
+      } as never,
+      worker: worker as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "continue and delete files in billing",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.outcome.type).toBe("approval_required");
+    expect(setPhase).toHaveBeenCalledWith("session:chat-1", "awaiting_approval");
+    expect(worker.runTask).not.toHaveBeenCalled();
+    expect(appendEvent.mock.calls.some((call) => call[0]?.type === "approval_requested")).toBe(
+      true,
+    );
+  });
 });

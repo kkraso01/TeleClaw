@@ -21,6 +21,7 @@ export function resolveOpenHandsBridgeConfig(env = process.env): OpenHandsBridge
   return {
     enabled,
     mode,
+    remoteFallbackEnabled: parseBoolean(env.OPENHANDS_REMOTE_FALLBACK_ENABLED, true),
     endpoint: env.OPENHANDS_ENDPOINT ?? "http://localhost:3001",
     apiKey: env.ONCALLDEV_OPENHANDS_API_KEY,
     llmBaseUrl: env.LLM_BASE_URL,
