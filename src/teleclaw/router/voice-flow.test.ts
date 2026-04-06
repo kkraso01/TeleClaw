@@ -164,7 +164,7 @@ function buildRouter(overrides?: {
         overrides?.transcribeAudio ??
         vi.fn().mockResolvedValue({
           text: "status billing",
-          provider: "faster-whisper",
+          provider: "whisper.cpp",
           metadata: { quality: "high", confidence: 0.92, language: "en" },
         }),
       synthesizeSpeech:
@@ -189,7 +189,7 @@ describe("TeleClaw voice flow", () => {
     expect(appendEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "inbound_voice_transcript",
-        provider: "faster-whisper",
+        provider: "whisper.cpp",
         metadata: expect.objectContaining({ quality: "high", confidence: 0.92 }),
       }),
     );
@@ -233,7 +233,7 @@ describe("TeleClaw voice flow", () => {
     const { router, appendEvent } = buildRouter({
       synthesizeSpeech: vi.fn().mockResolvedValue({
         mediaUrl: "/tmp/voice.mp3",
-        provider: "openai",
+        provider: "piper",
         voice: "alloy",
         format: "mp3",
       }),
@@ -252,7 +252,7 @@ describe("TeleClaw voice flow", () => {
     expect(appendEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "outbound_voice_reply_generated",
-        provider: "openai",
+        provider: "piper",
       }),
     );
     vi.unstubAllEnvs();

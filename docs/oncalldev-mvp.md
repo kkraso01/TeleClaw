@@ -14,7 +14,7 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - `src/teleclaw/memory`: event log + rolling summary + structured state + durable facts.
 - `src/teleclaw/approvals`: TeleClaw-owned pending approval records and approval status rendering.
 - `src/teleclaw/worker/adapter.ts`: OpenHands adapter (`runTask`, `resume`, `getStatus`, `summarize`) with project context payloads.
-- `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime, with local `faster-whisper` as the default STT provider and optional `openai` TTS provider for outbound voice replies.
+- `src/teleclaw/voice`: STT/TTS seams kept outside worker runtime, with local `whisper.cpp` as the default STT provider and default `piper` TTS provider (with optional non-default cloud providers) for outbound voice replies.
 - `src/teleclaw/router`: enforcing orchestration for intent, session/project binding, policy checks, and worker execution.
 - `src/teleclaw/policy`: boundary enforcement for project isolation and execution safety.
 
@@ -51,7 +51,7 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 ## Known MVP TODOs
 
 - Replace file-backed project/session stores with SQLite when migration and deploy footprint are acceptable.
-- Expand STT/TTS provider coverage beyond the current `faster-whisper` + `openai` baseline while keeping fallback-safe behavior.
+- Expand STT/TTS provider coverage beyond the current `whisper.cpp` + `piper` baseline while keeping fallback-safe behavior.
 - Add explicit project authorization policy per Telegram user.
 - Add health probes for OpenHands project containers.
 - Expand channel-visible progress updates for long-running worker tasks.
