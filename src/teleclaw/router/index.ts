@@ -57,13 +57,7 @@ type OnCallRouterDeps = {
   runtime?: OnCallRuntimeController;
 };
 
-const defaultAdapter = createOpenHandsAdapter({
-  baseUrl: process.env.OPENHANDS_ENDPOINT ?? "http://localhost:3001",
-  apiKey: process.env.ONCALLDEV_OPENHANDS_API_KEY,
-  llmBaseUrl: process.env.LLM_BASE_URL,
-  llmApiKey: process.env.LLM_API_KEY,
-  model: process.env.LLM_MODEL,
-});
+const defaultAdapter = createOpenHandsAdapter();
 
 type RuntimeIntent = "start" | "stop" | "restart" | "status" | null;
 
