@@ -3,12 +3,14 @@ import type {
   OnCallVoiceSynthesisResult,
   OnCallVoiceTranscriptResult,
 } from "../types.js";
-import {
-  transcribeWithFasterWhisper,
-  type FasterWhisperRunner,
-} from "./providers/faster-whisper.js";
 import { transcribeWithMockProvider } from "./providers/mock.js";
+import { transcribeWithWhisperCpp, type WhisperCppRunner } from "./providers/stt-whispercpp.js";
 import { resolveOpenAiTtsConfig, synthesizeWithOpenAiTts } from "./providers/tts-openai.js";
+import {
+  resolvePiperTtsConfig,
+  synthesizeWithPiper,
+  type PiperRunner,
+} from "./providers/tts-piper.js";
 
 export type OnCallVoiceService = {
   transcribeAudio: (input: {
@@ -25,14 +27,13 @@ export type OnCallVoiceServiceConfig = {
   sttProvider?: string;
   sttApiKey?: string;
   sttModel?: string;
-  sttDevice?: string;
-  sttComputeType?: string;
   sttLanguage?: string;
-  sttBeamSize?: number;
-  sttVadFilter?: boolean;
   sttMinConfidence?: number;
   sttProviderTimeoutMs?: number;
-  sttPythonBin?: string;
+  sttWhisperCppBin?: string;
+  sttWhisperCppModel?: string;
+  sttWhisperCppLanguage?: string;
+  sttWhisperCppThreads?: number;
   ttsProvider?: string;
   ttsApiKey?: string;
   ttsModel?: string;
@@ -41,11 +42,15 @@ export type OnCallVoiceServiceConfig = {
   ttsOutputDir?: string;
   ttsBaseUrl?: string;
   ttsProviderTimeoutMs?: number;
+  ttsPiperBin?: string;
+  ttsPiperModel?: string;
+  ttsPiperVoice?: string;
   enableVoiceReplies?: boolean;
 };
 
 type ProviderDeps = {
-  fasterWhisperRunner?: FasterWhisperRunner;
+  whisperCppRunner?: WhisperCppRunner;
+  piperRunner?: PiperRunner;
 };
 
 export class OnCallVoiceSynthesisProviderError extends Error {
@@ -107,18 +112,17 @@ function parseBoolean(input: string | undefined, fallback: boolean): boolean {
 
 function defaultConfig(): OnCallVoiceServiceConfig {
   return {
-    sttProvider: process.env.STT_PROVIDER ?? "faster-whisper",
+    sttProvider: process.env.STT_PROVIDER ?? "whisper.cpp",
     sttApiKey: process.env.STT_API_KEY,
-    sttModel: process.env.STT_MODEL ?? "base",
-    sttDevice: process.env.STT_DEVICE ?? "cpu",
-    sttComputeType: process.env.STT_COMPUTE_TYPE ?? "int8",
+    sttModel: process.env.STT_MODEL,
     sttLanguage: process.env.STT_LANGUAGE,
-    sttBeamSize: parseInteger(process.env.STT_BEAM_SIZE, 5),
-    sttVadFilter: parseBoolean(process.env.STT_VAD_FILTER, true),
     sttMinConfidence: parseFloatNumber(process.env.STT_MIN_CONFIDENCE, 0.35),
     sttProviderTimeoutMs: parseInteger(process.env.STT_PROVIDER_TIMEOUT_MS, 60000),
-    sttPythonBin: process.env.STT_PYTHON_BIN ?? "python3",
-    ttsProvider: process.env.TTS_PROVIDER,
+    sttWhisperCppBin: process.env.STT_WHISPERCPP_BIN ?? "whisper-cli",
+    sttWhisperCppModel: process.env.STT_WHISPERCPP_MODEL ?? process.env.STT_MODEL,
+    sttWhisperCppLanguage: process.env.STT_WHISPERCPP_LANGUAGE ?? process.env.STT_LANGUAGE,
+    sttWhisperCppThreads: parseInteger(process.env.STT_WHISPERCPP_THREADS, 4),
+    ttsProvider: process.env.TTS_PROVIDER ?? "piper",
     ttsApiKey: process.env.TTS_API_KEY,
     ttsModel: process.env.TTS_MODEL ?? "gpt-4o-mini-tts",
     ttsVoice: process.env.TTS_VOICE ?? "alloy",
@@ -126,6 +130,9 @@ function defaultConfig(): OnCallVoiceServiceConfig {
     ttsOutputDir: process.env.TTS_OUTPUT_DIR,
     ttsBaseUrl: process.env.TTS_BASE_URL,
     ttsProviderTimeoutMs: parseInteger(process.env.TTS_PROVIDER_TIMEOUT_MS, 30000),
+    ttsPiperBin: process.env.TTS_PIPER_BIN ?? "piper",
+    ttsPiperModel: process.env.TTS_PIPER_MODEL,
+    ttsPiperVoice: process.env.TTS_PIPER_VOICE,
     enableVoiceReplies: parseBoolean(process.env.ENABLE_VOICE_REPLIES, false),
   };
 }
@@ -166,27 +173,24 @@ export function createOnCallVoiceService(
         });
       }
 
-      if (resolved.sttProvider === "faster-whisper") {
+      if (resolved.sttProvider === "whisper.cpp") {
         try {
-          return await transcribeWithFasterWhisper(
+          return await transcribeWithWhisperCpp(
             { audioUrl: input.audioUrl },
             {
-              pythonBin: resolved.sttPythonBin ?? "python3",
-              model: resolved.sttModel ?? "base",
-              device: resolved.sttDevice ?? "cpu",
-              computeType: resolved.sttComputeType ?? "int8",
-              language: resolved.sttLanguage,
-              beamSize: resolved.sttBeamSize ?? 5,
-              vadFilter: resolved.sttVadFilter ?? true,
+              bin: resolved.sttWhisperCppBin ?? "whisper-cli",
+              model: resolved.sttWhisperCppModel ?? resolved.sttModel ?? "",
+              language: resolved.sttWhisperCppLanguage ?? resolved.sttLanguage,
+              threads: resolved.sttWhisperCppThreads ?? 4,
               timeoutMs: resolved.sttProviderTimeoutMs ?? 60000,
               minConfidence: resolved.sttMinConfidence ?? 0.35,
             },
-            deps.fasterWhisperRunner,
+            deps.whisperCppRunner,
           );
         } catch (error) {
           return {
             text: "",
-            provider: "faster-whisper",
+            provider: "whisper.cpp",
             metadata: {
               quality: "missing",
               reason: "stt_provider_failure",
@@ -218,13 +222,6 @@ export function createOnCallVoiceService(
           message: "No TTS provider configured.",
         });
       }
-      if (!resolved.ttsApiKey) {
-        throw new OnCallVoiceSynthesisProviderError({
-          code: "tts_provider_not_configured",
-          message: "TTS provider is configured without API key.",
-          provider: resolved.ttsProvider,
-        });
-      }
 
       const voiceSafeText = trimForVoice(text);
       if (!voiceSafeText) {
@@ -235,7 +232,48 @@ export function createOnCallVoiceService(
         });
       }
 
+      if (resolved.ttsProvider === "piper") {
+        if (!resolved.ttsPiperModel?.trim()) {
+          throw new OnCallVoiceSynthesisProviderError({
+            code: "tts_provider_not_configured",
+            message: "Piper TTS requires TTS_PIPER_MODEL to be set.",
+            provider: "piper",
+            voice: resolved.ttsPiperVoice,
+          });
+        }
+
+        try {
+          return await synthesizeWithPiper(
+            voiceSafeText,
+            resolvePiperTtsConfig({
+              bin: resolved.ttsPiperBin,
+              model: resolved.ttsPiperModel,
+              voice: resolved.ttsPiperVoice,
+              outputDir: resolved.ttsOutputDir,
+              timeoutMs: resolved.ttsProviderTimeoutMs,
+            }),
+            deps.piperRunner,
+          );
+        } catch (error) {
+          throw new OnCallVoiceSynthesisProviderError({
+            code: "tts_provider_failed",
+            message: "Piper synthesis failed.",
+            provider: "piper",
+            voice: resolved.ttsPiperVoice,
+            cause: error,
+          });
+        }
+      }
+
       if (resolved.ttsProvider === "openai") {
+        if (!resolved.ttsApiKey) {
+          throw new OnCallVoiceSynthesisProviderError({
+            code: "tts_provider_not_configured",
+            message: "OpenAI TTS provider is configured without API key.",
+            provider: resolved.ttsProvider,
+          });
+        }
+
         try {
           return await synthesizeWithOpenAiTts(
             voiceSafeText,

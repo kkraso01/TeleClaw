@@ -89,8 +89,8 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 
 ## Known limitations after this milestone
 
-- STT now defaults to local `faster-whisper`; alternative STT providers remain TODO behind the same provider seam.
-- TTS currently ships with a single provider integration (`openai`) behind the TeleClaw voice seam.
+- STT now defaults to local `whisper.cpp`; alternative STT providers remain TODO behind the same provider seam.
+- TTS defaults to local `piper`; `openai` remains optional and non-default for compatibility.
 - Approval policy remains text-pattern based (not full semantic plan analysis).
 - One pending approval per session remains the supported model.
 - OpenHands internals remain abstracted; TeleClaw continues to normalize worker output heuristically where needed.
@@ -99,5 +99,5 @@ Make TeleClaw feel daily-usable for a real Telegram user by hardening text, voic
 
 - Enable TeleClaw routing: `ONCALLDEV_ENABLED=1`.
 - Validate runtime health via status queries before long runs.
-- For voice, ensure STT/TTS secrets are present when voice-in/voice-out is required.
+- For voice, ensure local whisper.cpp and Piper binaries/models are installed and configured.
 - Use “what are you waiting for?” as the first check when execution appears paused.

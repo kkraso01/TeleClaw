@@ -327,7 +327,7 @@ describe("TeleClaw end-to-end journey scenarios", () => {
       voice: {
         transcribeAudio: vi.fn().mockResolvedValue({
           text: "maybe",
-          provider: "faster-whisper",
+          provider: "whisper.cpp",
           metadata: { quality: "low", confidence: 0.1 },
         }),
       },
@@ -348,7 +348,7 @@ describe("TeleClaw end-to-end journey scenarios", () => {
       voice: {
         transcribeAudio: vi.fn().mockResolvedValue({
           text: "",
-          provider: "faster-whisper",
+          provider: "whisper.cpp",
           metadata: { quality: "missing", reason: "stt_provider_failure" },
         }),
       },

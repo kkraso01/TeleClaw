@@ -2,83 +2,101 @@
 
 OnCallDev supports Telegram voice-note intake by normalizing voice into text before routing.
 
-## Current seam audit and gaps
+## Milestone audit summary
 
-Before this milestone, `src/teleclaw/voice` provided a mock-only STT seam:
+### Current provider seam
+
+`src/teleclaw/voice/index.ts` owns a provider seam with two stable operations:
 
 - `transcribeAudio({ audioUrl, transcriptHint? })`
 - `synthesizeSpeech(text, options?)`
 
-Observed behavior before the real provider work:
+TeleClaw owns provider selection, transcript normalization, fallback behavior, and memory/session eventing. Provider modules own only STT/TTS inference and artifact creation.
 
-- Voice notes entered `processVoiceInbound` and generated `inbound_voice_message` events.
-- If a transcript hint was present, router used it directly.
-- If STT was unavailable or not implemented, transcript was empty and routing fell back to clarification.
-- TTS failures were swallowed and replies were returned as text.
+### Previous state before this milestone
 
-The primary gap was real TTS generation for outbound voice replies.
+- STT default was `faster-whisper` via Python (`STT_PYTHON_BIN`) and inline Python execution.
+- TTS default path used `openai` when configured (`TTS_API_KEY`).
+- Text fallback existed and remained reliable for missing transcription and synthesis failures.
 
-## Target path in this milestone
+### Local/open target state after this milestone
 
-1. Telegram voice note reaches TeleClaw router voice intake.
-2. Router writes `inbound_voice_message` event.
-3. Voice service selects an STT provider (default `faster-whisper`).
-4. STT provider returns structured transcript payload:
+- STT default provider: `whisper.cpp`
+- TTS default provider: `piper`
+- Cloud provider path (`openai` TTS) remains optional and non-default for compatibility.
+
+## Operational flow
+
+1. Telegram voice note reaches `processVoiceInbound` in TeleClaw router.
+2. Router persists `inbound_voice_message`.
+3. TeleClaw voice service selects STT provider (default `whisper.cpp`).
+4. STT provider returns a structured transcript payload:
    - `text`
    - `provider`
-   - `metadata` (`language`, `duration`, `confidence`, quality signals)
-5. Router writes `inbound_voice_transcript` with transcript metadata.
-6. Transcript is routed through the same intent/session/project flow as text.
-7. Optional voice reply is attempted only when enabled; text fallback remains default-safe.
-8. Voice reply lifecycle events are persisted for debugging and operations.
+   - `metadata.language`
+   - `metadata.durationSeconds` (when available)
+   - `metadata.segmentCount`
+   - `metadata.confidence` (derived/inferred when available)
+   - `metadata.quality`
+5. Router persists `inbound_voice_transcript`.
+6. Transcript flows through the same TeleClaw routing logic as text.
+7. If reply mode is `voice` and voice replies are enabled, TeleClaw attempts `piper` synthesis.
+8. If synthesis fails or is unavailable, TeleClaw sends text and persists fallback reasons.
 
-## STT provider behavior
+## STT provider: whisper.cpp
 
-`faster-whisper` is now the default local STT backend when `STT_PROVIDER` is not explicitly set.
+Default env surface:
 
-- Provider runtime: local Python process (`STT_PYTHON_BIN`, default `python3`)
-- Inference package: `faster-whisper` (installed in local Python environment)
-- Model controls: `STT_MODEL`, `STT_DEVICE`, `STT_COMPUTE_TYPE`
-- Quality controls: `STT_VAD_FILTER`, `STT_MIN_CONFIDENCE`, `STT_BEAM_SIZE`
-- Timeout control: `STT_PROVIDER_TIMEOUT_MS`
+- `STT_PROVIDER=whisper.cpp`
+- `STT_WHISPERCPP_BIN=whisper-cli`
+- `STT_WHISPERCPP_MODEL=<path-to-ggml-model-bin>`
+- `STT_WHISPERCPP_LANGUAGE=` (optional)
+- `STT_WHISPERCPP_THREADS=4`
+- `STT_MIN_CONFIDENCE=0.35`
+- `STT_PROVIDER_TIMEOUT_MS=60000`
 
-## TTS provider strategy (this milestone)
+Notes:
 
-TeleClaw now uses a real provider path for TTS behind `src/teleclaw/voice`:
+- Local file paths and `file://` paths are supported directly.
+- HTTP(S) URLs are downloaded to temporary local files before transcription.
+- The core STT runtime path does not require cloud APIs.
 
-- Provider id: `openai`
-- Transport: HTTPS `POST /audio/speech`
-- Required env: `TTS_PROVIDER=openai`, `TTS_API_KEY`
-- Optional env:
-  - `TTS_BASE_URL` (defaults to `https://api.openai.com/v1`)
-  - `TTS_MODEL` (defaults to `gpt-4o-mini-tts`)
-  - `TTS_VOICE` (defaults to `alloy`)
-  - `TTS_FORMAT` (defaults to `mp3`)
-  - `TTS_OUTPUT_DIR` (defaults to `~/.openclaw/teleclaw/voice`)
-  - `TTS_PROVIDER_TIMEOUT_MS` (defaults to `30000`)
-  - `ENABLE_VOICE_REPLIES=1` to enable outbound voice synthesis
+## TTS provider: Piper
 
-Generated TTS artifacts are persisted in a predictable local directory and returned to Telegram through existing media reply flow using the artifact path.
+Default env surface:
 
-## Fallback behavior
+- `TTS_PROVIDER=piper`
+- `TTS_PIPER_BIN=piper`
+- `TTS_PIPER_MODEL=<path-to-piper-onnx-model>`
+- `TTS_PIPER_VOICE=` (optional speaker id)
+- `TTS_OUTPUT_DIR=~/.openclaw/teleclaw/voice`
+- `TTS_PROVIDER_TIMEOUT_MS=30000`
+- `ENABLE_VOICE_REPLIES=0` (must be enabled explicitly)
 
-TeleClaw always preserves text usability.
+Notes:
 
-- Missing transcript or low quality transcript:
-  - returns clarification message
-  - does not execute ambiguous action
-- STT provider missing/misconfigured/not supported:
-  - returns explicit text guidance to send request as text
-- STT provider runtime failure:
-  - returns explicit temporary-failure message and text fallback guidance
-- Voice reply unavailable / disabled / TTS failure:
-  - returns text reply with concise fallback note
-  - persists reason-coded events (`outbound_voice_reply_failed`, `outbound_voice_reply_fallback_text`)
+- Piper outputs `.wav` artifacts for Telegram delivery.
+- Artifacts are stored in `TTS_OUTPUT_DIR` until manually cleaned up.
+- If Piper is missing or misconfigured, TeleClaw falls back to text.
 
-## Known limitations after this milestone
+## Exact fallback behavior
 
-- Local faster-whisper requires a Python runtime and installed package (`pip install faster-whisper`).
-- Telegram voice URL fetching depends on runtime ability to fetch the attachment URL.
-- TTS is optional and defaults to off unless explicitly enabled.
-- OpenAI TTS requires network access and an API key; when unavailable, TeleClaw falls back to text.
-- Confidence is derived from Whisper signals (`avg_logprob`, `no_speech_prob`), not a universal probability metric.
+TeleClaw stays first-class for text under all failure modes.
+
+- STT unavailable/misconfigured/not supported:
+  - returns a clear text instruction to retry or send text
+  - no execution starts on missing/weak transcript
+- STT weak transcript:
+  - returns clarification reply
+  - persists provider + metadata for debugging
+- TTS disabled/unavailable/misconfigured/failed:
+  - sends final reply as text
+  - includes concise fallback note
+  - persists `outbound_voice_reply_failed` and `outbound_voice_reply_fallback_text`
+
+## Limitations after this milestone
+
+- `whisper.cpp` and Piper binaries/models must be installed locally and configured.
+- Whisper confidence remains an inferred heuristic from provider output signals.
+- Voice output retention is currently file-based; no automatic TTL cleanup is enforced yet.
+- OpenAI TTS is still available as a non-default compatibility option.
