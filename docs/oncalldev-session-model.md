@@ -63,7 +63,16 @@ Session `activeProjectId` remains the canonical project pointer for runtime atta
 
 ## Execution lifecycle state
 
-Session structured state now tracks install/test/build status and latest blocker/summary hints from execution progress.
+Session structured state now tracks:
+
+- normalized execution phase (`currentExecutionPhase`)
+- install/test/build status fields
+- latest changed-file summary and counts
+- blocker/error context
+- execution start/finish timestamps
+- repo branch/dirty snapshots used for status answers
+
+This state is TeleClaw-owned and updated from worker progress + final worker result normalization.
 
 ## Pending approval model
 

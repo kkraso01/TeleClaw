@@ -16,13 +16,42 @@
 
 Yes. Config default remains `OPENHANDS_MODE=vendor_local` when `OPENHANDS_ENABLED` is true.
 
-### Remaining bridge gaps identified in this milestone
+### Ingestion gaps audited before this milestone
 
-- Progress normalization was previously mostly heuristic and sparse.
-- Worker result normalization lacked first-class phase/blocker/next-step fields.
-- Status/summarize responses could rely on rolling summary text without surfacing structured worker facts (tests/files/blockers).
-- Approval boundaries for destructive work were not enforced before worker execution.
-- Vendor-local failures did not have a clear secondary fallback path in bridge mode.
+- Worker output capture existed (`text`, optional `summary`, sparse `progressEvents`) but lacked a TeleClaw-owned normalized execution state lifecycle.
+- Changed files were weakly represented (often empty arrays unless explicit worker structure appeared).
+- Install/test/build outcomes were partially heuristic and not consistently persisted in durable session + memory slices.
+- Blocker/error/next-step context was often only inferred from freeform summary text.
+- Status/summarize answers could over-rely on rolling summaries even when richer structured state could be assembled.
+
+### Target normalized execution state
+
+TeleClaw now normalizes execution into durable, project-aware fields:
+
+- `currentExecutionPhase`: idle, planning, implementing, installing, testing, building, summarizing, blocked, completed, error
+- `lastWorkerAction`, `lastTaskInstruction`
+- `filesChanged[]`, `filesChangedSummary`
+- `installStatus`, `testStatus`, `buildStatus`
+- `blockerReason`, `lastErrorSummary`, `nextSuggestedStep`
+- `lastExecutionSummary`, `lastExecutionStartedAt`, `lastExecutionFinishedAt`
+- `lastKnownBranch`, `lastKnownRepoDirtyState`, `lastKnownChangedFileCount`
+
+### Source of truth split: OpenHands vs TeleClaw inference
+
+Directly sourced from OpenHands when available:
+
+- worker `status`, `text`, `summary`
+- structured `progressEvents`
+- `workerSessionId`
+- optional structured fields on result payloads (phase/status/blocker/files)
+
+TeleClaw inference and normalization:
+
+- bounded phase inference from vendored OpenHands output when structure is missing
+- install/test/build status normalization (`started/succeeded/failed`, `passed/failed`)
+- blocker/error/next-step extraction from bounded line-pattern heuristics
+- repo branch/dirty refresh post-execution for status quality
+- durable session/memory synchronization and router-facing summarize/status rendering
 
 ## Milestone changes in this repo
 
@@ -40,7 +69,10 @@ TeleClaw now normalizes and records richer worker progress signals when availabl
 - dependency install start + finish
 - test start + pass/fail
 - build start + finish
+- build failure
 - worker error signals
+- changed file signals
+- blocked/completed execution signals
 
 TeleClaw stores this in durable memory and session structured state so status and summarize queries can report:
 
@@ -61,9 +93,9 @@ This happens in TeleClaw policy + router layers (not Telegram handler code).
 
 ## Known limitations
 
-- Vendored OpenHands CLI output is still parsed heuristically; full upstream event streaming is not yet wired.
-- File-level changed-file lists are not always available from vendored output and may remain empty unless explicit events/structured payloads are returned.
-- Approval pause/resume acknowledgement loop is partially implemented (request + pause are implemented; explicit approval command parsing and replay is a follow-up).
+- Vendored OpenHands CLI output is still parsed heuristically; full upstream OpenHands event streaming is not yet wired.
+- File-level changed-file lists still depend on worker structure or conservative text pattern matches and may be incomplete.
+- Repo dirty-state capture is intentionally bounded (`git status --porcelain` via TeleClaw repo helpers), not a full VCS event engine.
 
 ## Recommended future improvements
 

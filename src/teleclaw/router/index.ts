@@ -78,11 +78,18 @@ function resolveDefaultReplyMode(requested: "text" | "voice"): "text" | "voice" 
   return process.env.DEFAULT_REPLY_MODE === "voice" ? "voice" : "text";
 }
 
-function createEvent(event: Omit<OnCallMemoryEvent, "id">): OnCallMemoryEvent {
+function createEvent(
+  event: {
+    atMs: number;
+    sessionId: string;
+    type: OnCallMemoryEvent["type"];
+    projectId?: string;
+  } & Record<string, unknown>,
+): OnCallMemoryEvent {
   return {
     ...event,
     id: `mem:${event.sessionId}:${event.type}:${event.atMs}:${Math.random().toString(36).slice(2, 8)}`,
-  };
+  } as unknown as OnCallMemoryEvent;
 }
 
 function resolveRuntimeIntent(instruction: string): RuntimeIntent {
@@ -185,6 +192,31 @@ function buildReply(result: OnCallWorkerResult): string {
   return result.text;
 }
 
+function toSessionPhase(
+  executionPhase: OnCallWorkerResult["currentExecutionPhase"] | undefined,
+): OnCallSessionState["currentPhase"] | undefined {
+  switch (executionPhase) {
+    case "planning":
+      return "planning";
+    case "implementing":
+    case "installing":
+    case "building":
+      return "implementing";
+    case "testing":
+      return "testing";
+    case "summarizing":
+      return "reporting";
+    case "blocked":
+    case "error":
+      return "blocked";
+    case "idle":
+    case "completed":
+      return "idle";
+    default:
+      return undefined;
+  }
+}
+
 function createMemoryBackedStatusText(params: {
   summary: string;
   session: OnCallSessionState;
@@ -207,10 +239,20 @@ function createMemoryBackedStatusText(params: {
     ? `Changed files: ${params.structuredState.filesChanged.slice(-8).join(", ")}`
     : "Changed files: none captured yet";
   const testsLine =
-    params.structuredState.lastTestRunStatus &&
-    params.structuredState.lastTestRunStatus !== "unknown"
-      ? `Last test run: ${params.structuredState.lastTestRunStatus}`
+    params.structuredState.testStatus && params.structuredState.testStatus !== "unknown"
+      ? `Test status: ${params.structuredState.testStatus}`
       : "Last test run: unknown";
+  const buildLine =
+    params.structuredState.buildStatus && params.structuredState.buildStatus !== "unknown"
+      ? `Build status: ${params.structuredState.buildStatus}`
+      : "Build status: unknown";
+  const installLine =
+    params.structuredState.installStatus && params.structuredState.installStatus !== "unknown"
+      ? `Install status: ${params.structuredState.installStatus}`
+      : "Install status: unknown";
+  const phaseLine = params.structuredState.currentExecutionPhase
+    ? `Execution phase: ${params.structuredState.currentExecutionPhase}`
+    : "";
   const blockerLine = params.structuredState.currentBlocker
     ? `Blocker: ${params.structuredState.currentBlocker}`
     : "Blocker: none recorded";
@@ -219,8 +261,8 @@ function createMemoryBackedStatusText(params: {
     : "Next step: not recorded";
 
   return askedForSummary
-    ? `Summary for ${params.projectName}:\n${summary}\n${filesLine}\n${testsLine}\n${blockerLine}\n${nextStepLine}`
-    : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}\n${filesLine}\n${testsLine}\n${blockerLine}\n${nextStepLine}`;
+    ? `Summary for ${params.projectName}:\n${summary}\n${phaseLine}\n${filesLine}\n${installLine}\n${testsLine}\n${buildLine}\n${blockerLine}\n${nextStepLine}`
+    : `Status for ${params.projectName} (${params.session.currentPhase}):\n${summary}\n${phaseLine}\n${filesLine}\n${installLine}\n${testsLine}\n${buildLine}\n${blockerLine}\n${nextStepLine}`;
 }
 
 async function persistWorkerResultState(params: {
@@ -232,13 +274,62 @@ async function persistWorkerResultState(params: {
 }): Promise<void> {
   await params.sessions.setStructuredState(params.sessionId, {
     currentPhase: params.result.phase,
+    currentExecutionPhase: params.result.currentExecutionPhase,
     currentBlocker: params.result.blockerReason,
+    blockerReason: params.result.blockerReason,
+    lastErrorSummary: params.result.lastErrorSummary,
     nextSuggestedStep: params.result.nextSuggestedStep,
     filesChanged: params.result.filesChanged,
+    installStatus: params.result.installStatus,
+    testStatus: params.result.testStatus,
+    buildStatus: params.result.buildStatus,
+    lastTaskInstruction: params.result.lastTaskInstruction,
+    lastExecutionSummary: params.result.summary ?? params.result.text,
+    lastExecutionFinishedAt: params.result.lastExecutionFinishedAt ?? new Date().toISOString(),
+    lastKnownBranch: params.result.lastKnownBranch,
+    lastKnownRepoDirtyState: params.result.lastKnownRepoDirtyState,
+    lastKnownChangedFileCount:
+      params.result.lastKnownChangedFileCount ?? params.result.filesChanged?.length ?? 0,
     filesChangedSummary: params.result.filesChanged?.length
       ? `${params.result.filesChanged.length} file(s) changed`
       : undefined,
   });
+
+  const statusEventType =
+    params.result.status === "ok"
+      ? "execution.completed"
+      : params.result.status === "busy"
+        ? "execution.phase_changed"
+        : "execution.errored";
+  await params.memory.appendEvent(
+    createEvent({
+      atMs: Date.now(),
+      sessionId: params.sessionId,
+      projectId: params.projectId,
+      type: "teleclaw_event",
+      eventType: statusEventType,
+      message: params.result.summary ?? params.result.text,
+      details: {
+        executionPhase: params.result.currentExecutionPhase,
+      },
+    }),
+  );
+
+  if (params.result.filesChanged?.length) {
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "teleclaw_event",
+        eventType: "execution.files_changed",
+        message: `Worker reported ${params.result.filesChanged.length} changed file(s).`,
+        details: {
+          filesChanged: params.result.filesChanged,
+        },
+      }),
+    );
+  }
 
   if (params.result.blockerReason) {
     await params.memory.appendEvent(
@@ -254,7 +345,19 @@ async function persistWorkerResultState(params: {
           phase: "blocked",
           blockers: [params.result.blockerReason],
           nextSuggestedStep: params.result.nextSuggestedStep,
+          blockerReason: params.result.blockerReason,
+          errorSummary: params.result.lastErrorSummary,
         },
+      }),
+    );
+    await params.memory.appendEvent(
+      createEvent({
+        atMs: Date.now(),
+        sessionId: params.sessionId,
+        projectId: params.projectId,
+        type: "teleclaw_event",
+        eventType: "execution.blocked",
+        message: params.result.blockerReason,
       }),
     );
   }
@@ -309,18 +412,55 @@ async function persistProgress(params: {
 }): Promise<void> {
   const inferredInstallStatus =
     params.event.kind === "dependency_install"
-      ? "running"
-      : params.event.kind === "worker_error"
-        ? "failed"
-        : undefined;
+      ? "started"
+      : params.event.kind === "dependency_install_finished"
+        ? "succeeded"
+        : params.event.kind === "dependency_install_failed" || params.event.kind === "worker_error"
+          ? "failed"
+          : undefined;
   const inferredTestStatus =
     params.event.kind === "testing_started"
-      ? "running"
+      ? "started"
       : params.event.kind === "tests_passed"
         ? "passed"
         : params.event.kind === "tests_failed"
           ? "failed"
           : undefined;
+  const inferredBuildStatus =
+    params.event.kind === "build_started"
+      ? "started"
+      : params.event.kind === "build_finished"
+        ? "succeeded"
+        : params.event.kind === "build_failed"
+          ? "failed"
+          : undefined;
+  const inferredExecutionPhase =
+    params.event.executionPhase ??
+    (params.event.kind === "planning_started"
+      ? "planning"
+      : params.event.kind === "implementation_started"
+        ? "implementing"
+        : params.event.kind === "dependency_install" ||
+            params.event.kind === "dependency_install_finished" ||
+            params.event.kind === "dependency_install_failed"
+          ? "installing"
+          : params.event.kind === "testing_started" ||
+              params.event.kind === "tests_passed" ||
+              params.event.kind === "tests_failed"
+            ? "testing"
+            : params.event.kind === "build_started" ||
+                params.event.kind === "build_finished" ||
+                params.event.kind === "build_failed"
+              ? "building"
+              : params.event.kind === "summary_ready"
+                ? "summarizing"
+                : params.event.kind === "execution_completed"
+                  ? "completed"
+                  : params.event.kind === "execution_blocked" ||
+                      params.event.kind === "worker_error"
+                    ? "blocked"
+                    : undefined);
+  const inferredSessionPhase = toSessionPhase(inferredExecutionPhase);
 
   await params.memory.appendEvent(
     createEvent({
@@ -333,9 +473,13 @@ async function persistProgress(params: {
   );
 
   await params.sessions.appendRecentAction(params.sessionId, `progress:${params.event.kind}`);
+  if (inferredSessionPhase) {
+    await params.sessions.setPhase(params.sessionId, inferredSessionPhase);
+  }
 
   await params.sessions.setStructuredState(params.sessionId, {
     currentPhase: params.event.phase,
+    currentExecutionPhase: inferredExecutionPhase,
     lastWorkerAction: params.event.kind,
     nextSuggestedStep: params.event.nextSuggestedStep,
     filesChanged: params.event.filesChanged,
@@ -343,12 +487,63 @@ async function persistProgress(params: {
     testsFailing: params.event.testsFailing,
     blockers: params.event.blockers,
     installStatus: inferredInstallStatus,
+    testStatus: inferredTestStatus,
+    buildStatus: inferredBuildStatus,
     lastTestRunStatus: inferredTestStatus,
+    lastBuildStatus: inferredBuildStatus,
     currentBlocker: params.event.blockers?.[0],
+    blockerReason: params.event.blockerReason,
+    lastErrorSummary: params.event.errorSummary,
+    lastKnownBranch: params.event.branch,
+    lastKnownRepoDirtyState:
+      params.event.repoDirty === undefined ? undefined : params.event.repoDirty ? "dirty" : "clean",
+    lastKnownChangedFileCount: params.event.changedFileCount,
     filesChangedSummary: params.event.filesChanged?.length
       ? `${params.event.filesChanged.length} file(s) changed`
       : undefined,
   });
+
+  const progressEventType =
+    params.event.kind === "dependency_install"
+      ? "execution.install_started"
+      : params.event.kind === "dependency_install_finished"
+        ? "execution.install_succeeded"
+        : params.event.kind === "dependency_install_failed"
+          ? "execution.install_failed"
+          : params.event.kind === "testing_started"
+            ? "execution.test_started"
+            : params.event.kind === "tests_passed"
+              ? "execution.test_passed"
+              : params.event.kind === "tests_failed"
+                ? "execution.test_failed"
+                : params.event.kind === "build_started"
+                  ? "execution.build_started"
+                  : params.event.kind === "build_finished"
+                    ? "execution.build_succeeded"
+                    : params.event.kind === "build_failed"
+                      ? "execution.build_failed"
+                      : params.event.kind === "files_changed"
+                        ? "execution.files_changed"
+                        : params.event.kind === "execution_completed"
+                          ? "execution.completed"
+                          : params.event.kind === "execution_blocked" ||
+                              params.event.kind === "worker_error"
+                            ? "execution.blocked"
+                            : "execution.phase_changed";
+  await params.memory.appendEvent(
+    createEvent({
+      atMs: Date.now(),
+      sessionId: params.sessionId,
+      projectId: params.projectId,
+      type: "teleclaw_event",
+      eventType: progressEventType,
+      message: params.event.message,
+      details: {
+        kind: params.event.kind,
+        phase: inferredExecutionPhase,
+      },
+    }),
+  );
 }
 
 export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
@@ -1460,7 +1655,10 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           },
         }),
       );
-      await sessions.setStructuredState(boundSession.sessionId, { installStatus: "running" });
+      await sessions.setStructuredState(boundSession.sessionId, {
+        installStatus: "started",
+        currentExecutionPhase: "installing",
+      });
     }
     if (/\btest(s)?\b/.test(normalizedInstruction)) {
       await memory.appendEvent(
@@ -1477,7 +1675,11 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         }),
       );
       await sessions.setPhase(boundSession.sessionId, "testing");
-      await sessions.setStructuredState(boundSession.sessionId, { lastTestRunStatus: "running" });
+      await sessions.setStructuredState(boundSession.sessionId, {
+        testStatus: "started",
+        lastTestRunStatus: "started",
+        currentExecutionPhase: "testing",
+      });
     }
     if (/\bbuild\b/.test(normalizedInstruction)) {
       await memory.appendEvent(
@@ -1493,10 +1695,19 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
           },
         }),
       );
-      await sessions.setStructuredState(boundSession.sessionId, { lastBuildStatus: "running" });
+      await sessions.setStructuredState(boundSession.sessionId, {
+        buildStatus: "started",
+        lastBuildStatus: "started",
+        currentExecutionPhase: "building",
+      });
     }
     try {
       await sessions.setPhase(boundSession.sessionId, "planning");
+      await sessions.setStructuredState(boundSession.sessionId, {
+        lastTaskInstruction: intent.instruction,
+        lastExecutionStartedAt: new Date().toISOString(),
+        currentExecutionPhase: "planning",
+      });
       result = await invokeWorker({
         action: intent.action,
         worker,
@@ -1543,6 +1754,41 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       return { text: outcome.text, replyMode, outcome };
     }
 
+    const repoAfterExecution =
+      "refreshProjectRepoState" in projects &&
+      typeof projects.refreshProjectRepoState === "function"
+        ? await projects.refreshProjectRepoState(project.id)
+        : null;
+    const repoDirtyState =
+      repoAfterExecution?.repoStatus === "dirty"
+        ? "dirty"
+        : repoAfterExecution?.repoStatus === "clean"
+          ? "clean"
+          : (result.lastKnownRepoDirtyState ?? "unknown");
+    const normalizedResult: OnCallWorkerResult = {
+      ...result,
+      currentExecutionPhase:
+        result.currentExecutionPhase ??
+        (result.status === "ok"
+          ? "completed"
+          : result.status === "error"
+            ? "error"
+            : "implementing"),
+      lastExecutionStartedAt: result.lastExecutionStartedAt,
+      lastExecutionFinishedAt: result.lastExecutionFinishedAt ?? new Date().toISOString(),
+      lastTaskInstruction: result.lastTaskInstruction ?? intent.instruction,
+      lastKnownBranch:
+        result.lastKnownBranch ?? repoAfterExecution?.branch ?? runtimeProject.branch ?? undefined,
+      lastKnownRepoDirtyState: repoDirtyState,
+      lastKnownChangedFileCount:
+        result.lastKnownChangedFileCount ??
+        result.filesChanged?.length ??
+        (repoDirtyState === "dirty" ? 1 : 0),
+      testStatus: result.testStatus,
+      buildStatus: result.buildStatus,
+      installStatus: result.installStatus,
+    };
+
     for (const progressEvent of result.progressEvents ?? []) {
       await persistProgress({
         memory,
@@ -1557,7 +1803,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       memory,
       sessionId: boundSession.sessionId,
       projectId: project.id,
-      result,
+      result: normalizedResult,
     });
 
     if (/\binstall\b/.test(normalizedInstruction)) {
@@ -1572,7 +1818,7 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         }),
       );
       await sessions.setStructuredState(boundSession.sessionId, {
-        installStatus: result.status === "ok" ? "passed" : "failed",
+        installStatus: normalizedResult.status === "ok" ? "succeeded" : "failed",
       });
     }
     if (/\btest(s)?\b/.test(normalizedInstruction)) {
@@ -1587,7 +1833,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         }),
       );
       await sessions.setStructuredState(boundSession.sessionId, {
-        lastTestRunStatus: result.status === "ok" ? "passed" : "failed",
+        testStatus: normalizedResult.status === "ok" ? "passed" : "failed",
+        lastTestRunStatus: normalizedResult.status === "ok" ? "passed" : "failed",
       });
     }
     if (/\bbuild\b/.test(normalizedInstruction)) {
@@ -1602,7 +1849,8 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
         }),
       );
       await sessions.setStructuredState(boundSession.sessionId, {
-        lastBuildStatus: result.status === "ok" ? "passed" : "failed",
+        buildStatus: normalizedResult.status === "ok" ? "succeeded" : "failed",
+        lastBuildStatus: normalizedResult.status === "ok" ? "succeeded" : "failed",
       });
     }
 
@@ -1617,11 +1865,16 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
     );
 
     if (result.summary) {
-      await memory.setSummary(boundSession.sessionId, result.summary, project.id);
-      await sessions.setSummary(boundSession.sessionId, result.summary);
+      await memory.setSummary(
+        boundSession.sessionId,
+        normalizedResult.summary ?? result.summary,
+        project.id,
+      );
+      await sessions.setSummary(boundSession.sessionId, normalizedResult.summary ?? result.summary);
       await sessions.setStructuredState(boundSession.sessionId, {
         lastWorkerAction: intent.action,
-        lastSummarizedOutput: result.summary,
+        lastSummarizedOutput: normalizedResult.summary ?? result.summary,
+        lastExecutionSummary: normalizedResult.summary ?? result.summary,
       });
     }
 
@@ -1637,8 +1890,13 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       await memory.compactSessionMemory(boundSession.sessionId, project.id);
     }
 
-    const finalText = buildReply(result);
-    await sessions.setPhase(boundSession.sessionId, result.phase ?? "reporting");
+    const finalText = buildReply(normalizedResult);
+    await sessions.setPhase(
+      boundSession.sessionId,
+      toSessionPhase(normalizedResult.currentExecutionPhase) ??
+        normalizedResult.phase ??
+        "reporting",
+    );
     const voiceReply = await maybeSynthesizeVoiceReply({
       responseText: finalText,
       replyMode,
@@ -1656,11 +1914,11 @@ export function createOnCallRouter(deps: OnCallRouterDeps = {}): OnCallRouter {
       text: finalText,
       execution: {
         action: intent.action,
-        status: result.status,
+        status: normalizedResult.status,
         source: "worker",
       },
       runtimeOutcome: ensuredRuntime.outcome,
-      summary: result.summary,
+      summary: normalizedResult.summary,
       voiceMediaUrl: voiceReply?.mediaUrl,
     };
 

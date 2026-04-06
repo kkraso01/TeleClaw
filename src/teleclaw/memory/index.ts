@@ -72,8 +72,13 @@ const EMPTY_STRUCTURED_STATE: OnCallStructuredState = {
   testsFailing: [],
   blockers: [],
   installStatus: "unknown",
+  testStatus: "unknown",
+  buildStatus: "unknown",
   lastTestRunStatus: "unknown",
   lastBuildStatus: "unknown",
+  currentExecutionPhase: "idle",
+  lastKnownRepoDirtyState: "unknown",
+  lastKnownChangedFileCount: 0,
 };
 
 function nowIso() {
@@ -186,9 +191,51 @@ function mergeStructuredState(
   current: OnCallStructuredState,
   next: Partial<OnCallStructuredState>,
 ): OnCallStructuredState {
+  const installStatusInput = next.installStatus as string | undefined;
+  const testStatusInput = next.testStatus as string | undefined;
+  const buildStatusInput = next.buildStatus as string | undefined;
+  const lastTestStatusInput = next.lastTestRunStatus as string | undefined;
+  const lastBuildStatusInput = next.lastBuildStatus as string | undefined;
+
+  const normalizedInstallStatus =
+    installStatusInput === "running"
+      ? "started"
+      : installStatusInput === "passed"
+        ? "succeeded"
+        : next.installStatus;
+  const normalizedTestStatus =
+    testStatusInput === "running"
+      ? "started"
+      : testStatusInput === "succeeded"
+        ? "passed"
+        : next.testStatus;
+  const normalizedBuildStatus =
+    buildStatusInput === "running"
+      ? "started"
+      : buildStatusInput === "passed"
+        ? "succeeded"
+        : next.buildStatus;
+  const normalizedLastTestRunStatus =
+    lastTestStatusInput === "running"
+      ? "started"
+      : lastTestStatusInput === "succeeded"
+        ? "passed"
+        : next.lastTestRunStatus;
+  const normalizedLastBuildStatus =
+    lastBuildStatusInput === "running"
+      ? "started"
+      : lastBuildStatusInput === "passed"
+        ? "succeeded"
+        : next.lastBuildStatus;
+
   return {
     ...current,
     ...next,
+    ...(normalizedInstallStatus ? { installStatus: normalizedInstallStatus } : {}),
+    ...(normalizedTestStatus ? { testStatus: normalizedTestStatus } : {}),
+    ...(normalizedBuildStatus ? { buildStatus: normalizedBuildStatus } : {}),
+    ...(normalizedLastTestRunStatus ? { lastTestRunStatus: normalizedLastTestRunStatus } : {}),
+    ...(normalizedLastBuildStatus ? { lastBuildStatus: normalizedLastBuildStatus } : {}),
     filesChanged: mergeUnique(current.filesChanged, next.filesChanged),
     testsPassing: mergeUnique(current.testsPassing, next.testsPassing),
     testsFailing: mergeUnique(current.testsFailing, next.testsFailing),
@@ -223,8 +270,11 @@ function buildHeuristicCompaction(params: {
   let currentGoal = structuredState.currentGoal;
   let activeTask = structuredState.activeTask;
   let currentPhase = structuredState.currentPhase;
+  let currentExecutionPhase = structuredState.currentExecutionPhase;
   let lastWorkerAction = structuredState.lastWorkerAction;
   let nextSuggestedStep = structuredState.nextSuggestedStep;
+  let blockerReason = structuredState.blockerReason;
+  let lastErrorSummary = structuredState.lastErrorSummary;
 
   let filesChanged = [...structuredState.filesChanged];
   let testsPassing = [...structuredState.testsPassing];
@@ -247,8 +297,11 @@ function buildHeuristicCompaction(params: {
 
     if (event.type === "worker_status_progress") {
       currentPhase = event.progress.phase ?? currentPhase;
+      currentExecutionPhase = event.progress.executionPhase ?? currentExecutionPhase;
       lastWorkerAction = event.progress.kind;
       nextSuggestedStep = event.progress.nextSuggestedStep ?? nextSuggestedStep;
+      blockerReason = event.progress.blockerReason ?? blockerReason;
+      lastErrorSummary = event.progress.errorSummary ?? lastErrorSummary;
       filesChanged = mergeUnique(filesChanged, event.progress.filesChanged);
       testsPassing = mergeUnique(testsPassing, event.progress.testsPassing);
       testsFailing = mergeUnique(testsFailing, event.progress.testsFailing);
@@ -292,8 +345,11 @@ function buildHeuristicCompaction(params: {
       currentGoal,
       activeTask,
       currentPhase,
+      currentExecutionPhase,
       lastWorkerAction,
       nextSuggestedStep,
+      blockerReason,
+      lastErrorSummary,
       filesChanged,
       testsPassing,
       testsFailing,

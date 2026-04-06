@@ -110,6 +110,22 @@ export type OnCallSessionPhase =
   | "reporting"
   | "paused";
 
+export type OnCallExecutionPhase =
+  | "idle"
+  | "planning"
+  | "implementing"
+  | "installing"
+  | "testing"
+  | "building"
+  | "summarizing"
+  | "blocked"
+  | "completed"
+  | "error";
+
+export type OnCallExecutionInstallStatus = "unknown" | "started" | "succeeded" | "failed";
+export type OnCallExecutionTestStatus = "unknown" | "started" | "passed" | "failed";
+export type OnCallExecutionBuildStatus = "unknown" | "started" | "succeeded" | "failed";
+
 export type OnCallSessionState = {
   sessionId: string;
   chatId: string;
@@ -171,19 +187,31 @@ export type OnCallDurableFacts = {
 export type OnCallStructuredState = {
   currentGoal?: string;
   currentPhase?: OnCallSessionPhase;
+  currentExecutionPhase?: OnCallExecutionPhase;
   activeTask?: string;
   filesChanged: string[];
   testsPassing: string[];
   testsFailing: string[];
   blockers: string[];
-  installStatus?: "unknown" | "running" | "passed" | "failed";
-  lastTestRunStatus?: "unknown" | "running" | "passed" | "failed";
-  lastBuildStatus?: "unknown" | "running" | "passed" | "failed";
+  installStatus?: OnCallExecutionInstallStatus;
+  testStatus?: OnCallExecutionTestStatus;
+  buildStatus?: OnCallExecutionBuildStatus;
+  lastTestRunStatus?: OnCallExecutionTestStatus;
+  lastBuildStatus?: OnCallExecutionBuildStatus;
   filesChangedSummary?: string;
   lastSummarizedOutput?: string;
   currentBlocker?: string;
+  blockerReason?: string;
+  lastErrorSummary?: string;
   lastWorkerAction?: string;
+  lastTaskInstruction?: string;
   nextSuggestedStep?: string;
+  lastExecutionSummary?: string;
+  lastExecutionStartedAt?: string;
+  lastExecutionFinishedAt?: string;
+  lastKnownBranch?: string;
+  lastKnownRepoDirtyState?: "unknown" | "dirty" | "clean";
+  lastKnownChangedFileCount?: number;
   lastCompactedAt?: string;
 } & Record<string, unknown>;
 
@@ -201,11 +229,16 @@ export type OnCallWorkerProgressKind =
   | "testing_started"
   | "build_started"
   | "build_finished"
+  | "build_failed"
   | "dependency_install"
   | "dependency_install_finished"
+  | "dependency_install_failed"
   | "tests_failed"
   | "tests_passed"
   | "summary_ready"
+  | "files_changed"
+  | "execution_blocked"
+  | "execution_completed"
   | "worker_error";
 
 export type OnCallWorkerProgressEvent = {
@@ -217,6 +250,15 @@ export type OnCallWorkerProgressEvent = {
   testsPassing?: string[];
   testsFailing?: string[];
   blockers?: string[];
+  blockerReason?: string;
+  errorSummary?: string;
+  installStatus?: OnCallExecutionInstallStatus;
+  testStatus?: OnCallExecutionTestStatus;
+  buildStatus?: OnCallExecutionBuildStatus;
+  executionPhase?: OnCallExecutionPhase;
+  branch?: string;
+  repoDirty?: boolean;
+  changedFileCount?: number;
   nextSuggestedStep?: string;
 };
 
@@ -249,7 +291,17 @@ export type OnCallExecutionEventType =
   | "execution.test_finished"
   | "execution.build_started"
   | "execution.build_finished"
+  | "execution.phase_changed"
+  | "execution.install_succeeded"
+  | "execution.install_failed"
+  | "execution.test_passed"
+  | "execution.test_failed"
+  | "execution.build_succeeded"
+  | "execution.build_failed"
+  | "execution.files_changed"
   | "execution.blocked"
+  | "execution.completed"
+  | "execution.errored"
   | "approval_granted"
   | "approval_rejected"
   | "approval_resumed"
@@ -439,9 +491,20 @@ export type OnCallWorkerResult = {
   summary?: string;
   workerSessionId?: string;
   phase?: OnCallSessionPhase;
+  currentExecutionPhase?: OnCallExecutionPhase;
   blockerReason?: string;
+  lastErrorSummary?: string;
   nextSuggestedStep?: string;
   filesChanged?: string[];
+  installStatus?: OnCallExecutionInstallStatus;
+  testStatus?: OnCallExecutionTestStatus;
+  buildStatus?: OnCallExecutionBuildStatus;
+  lastTaskInstruction?: string;
+  lastExecutionStartedAt?: string;
+  lastExecutionFinishedAt?: string;
+  lastKnownBranch?: string;
+  lastKnownRepoDirtyState?: "unknown" | "dirty" | "clean";
+  lastKnownChangedFileCount?: number;
   progressEvents?: OnCallWorkerProgressEvent[];
   meta?: Record<string, unknown>;
 };

@@ -40,8 +40,14 @@ Each session can keep both session-wide and project-scoped memory slices.
    - `testsPassing`
    - `testsFailing`
    - `blockers`
-   - `lastWorkerAction`
-   - `nextSuggestedStep`
+
+- `currentExecutionPhase`
+- `installStatus`, `testStatus`, `buildStatus`
+- `lastWorkerAction`, `lastTaskInstruction`
+- `blockerReason`, `lastErrorSummary`, `nextSuggestedStep`
+- `lastExecutionSummary`
+- `lastExecutionStartedAt`, `lastExecutionFinishedAt`
+- `lastKnownBranch`, `lastKnownRepoDirtyState`, `lastKnownChangedFileCount`
 
 4. Durable facts
    - reply mode preference
@@ -64,6 +70,8 @@ When compaction runs, TeleClaw:
 - appends a `compaction` event for auditability
 
 Compaction prioritizes preserving goal, blockers, changes, test state, and next steps.
+
+The structured-state merge layer also normalizes legacy status values (`running` -> `started`, `passed` -> `succeeded` where applicable) to keep durable state consistent.
 
 ## Current limitations and TODOs
 

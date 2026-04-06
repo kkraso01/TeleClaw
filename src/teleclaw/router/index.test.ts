@@ -234,6 +234,11 @@ describe("createOnCallRouter runtime lifecycle", () => {
       sessions: {
         getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
         bindProject: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindWorker: vi.fn().mockResolvedValue(null),
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+        setSummary: vi.fn().mockResolvedValue(null),
+        setPhase: vi.fn().mockResolvedValue(null),
+        setStructuredState: vi.fn().mockResolvedValue(null),
       } as never,
       memory: {
         appendEvent: vi.fn().mockResolvedValue(undefined),
@@ -560,6 +565,38 @@ describe("createOnCallRouter runtime lifecycle", () => {
         appendEvent,
       } as never,
       worker: worker as never,
+      runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
+        ensureProjectRuntime: vi.fn().mockResolvedValue({
+          outcome: "runtime_reused",
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+        validateProjectRuntime: vi.fn().mockResolvedValue({
+          ok: true,
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+      } as never,
     });
 
     const response = await router.processInbound({
@@ -576,6 +613,222 @@ describe("createOnCallRouter runtime lifecycle", () => {
     expect(appendEvent.mock.calls.some((call) => call[0]?.type === "approval_requested")).toBe(
       true,
     );
+  });
+
+  it("normalizes worker execution state and persists structured status fields", async () => {
+    const setStructuredState = vi.fn().mockResolvedValue(null);
+    const appendEvent = vi.fn().mockResolvedValue(undefined);
+    const worker = {
+      runTask: vi.fn().mockResolvedValue({
+        status: "error",
+        text: "tests failed on billing flow",
+        currentExecutionPhase: "error",
+        testStatus: "failed",
+        buildStatus: "succeeded",
+        installStatus: "succeeded",
+        blockerReason: "unit tests are failing",
+        lastErrorSummary: "expected 200 but received 500",
+        filesChanged: ["src/billing/service.ts", "src/billing/service.test.ts"],
+        progressEvents: [
+          {
+            atMs: Date.now(),
+            kind: "tests_failed",
+            message: "billing suite failed",
+            phase: "blocked",
+            executionPhase: "testing",
+            testsFailing: ["billing suite"],
+            blockerReason: "unit tests are failing",
+          },
+        ],
+      }),
+      resume: vi.fn(),
+      getStatus: vi.fn(),
+      summarize: vi.fn(),
+    };
+
+    const router = createOnCallRouter({
+      projects: {
+        resolveProject: vi.fn().mockResolvedValue({
+          type: "resolved",
+          via: "id",
+          project: buildResolvedProject(),
+        }),
+        refreshProjectRepoState: vi.fn().mockResolvedValue({
+          ...buildResolvedProject(),
+          repoStatus: "dirty",
+          branch: "feature/billing-fix",
+        }),
+        rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
+      } as never,
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindProject: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindWorker: vi.fn().mockResolvedValue(null),
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+        setSummary: vi.fn().mockResolvedValue(null),
+        setPhase: vi.fn().mockResolvedValue(null),
+        setStructuredState,
+      } as never,
+      memory: {
+        appendEvent,
+        mergeDurableFacts: vi.fn().mockResolvedValue({}),
+        getSummary: vi.fn().mockResolvedValue(""),
+        getStructuredState: vi.fn().mockResolvedValue({
+          filesChanged: [],
+          testsPassing: [],
+          testsFailing: [],
+          blockers: [],
+        }),
+        setSummary: vi.fn().mockResolvedValue(undefined),
+        compactSessionMemory: vi.fn().mockResolvedValue({ compactedEvents: 0 }),
+      } as never,
+      worker: worker as never,
+      runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
+        ensureProjectRuntime: vi.fn().mockResolvedValue({
+          outcome: "runtime_reused",
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+        validateProjectRuntime: vi.fn().mockResolvedValue({
+          ok: true,
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+      } as never,
+    });
+
+    await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "run billing tests",
+      timestampMs: Date.now(),
+    });
+
+    expect(
+      setStructuredState.mock.calls.some(
+        (call) =>
+          call[1]?.testStatus === "failed" &&
+          call[1]?.currentExecutionPhase === "error" &&
+          call[1]?.lastKnownBranch === "feature/billing-fix",
+      ),
+    ).toBe(true);
+    expect(
+      appendEvent.mock.calls.some(
+        (call) =>
+          call[0]?.type === "teleclaw_event" && call[0]?.eventType === "execution.test_failed",
+      ),
+    ).toBe(true);
+  });
+
+  it("answers summarize/status from structured execution state without worker call", async () => {
+    const worker = {
+      runTask: vi.fn(),
+      resume: vi.fn(),
+      getStatus: vi.fn(),
+      summarize: vi.fn(),
+    };
+    const router = createOnCallRouter({
+      projects: {
+        resolveProject: vi.fn().mockResolvedValue({
+          type: "resolved",
+          via: "id",
+          project: buildResolvedProject(),
+        }),
+        rememberActiveProject: vi.fn().mockResolvedValue(undefined),
+        getProjectById: vi.fn().mockResolvedValue(buildResolvedProject()),
+      } as never,
+      sessions: {
+        getOrCreateSession: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindProject: vi.fn().mockResolvedValue(buildSession("billing")),
+        bindWorker: vi.fn().mockResolvedValue(null),
+        appendRecentAction: vi.fn().mockResolvedValue(null),
+        setSummary: vi.fn().mockResolvedValue(null),
+        setPhase: vi.fn().mockResolvedValue(null),
+        setStructuredState: vi.fn().mockResolvedValue(null),
+      } as never,
+      memory: {
+        appendEvent: vi.fn().mockResolvedValue(undefined),
+        mergeDurableFacts: vi.fn().mockResolvedValue({}),
+        getSummary: vi.fn().mockResolvedValue("Billing task completed with one failing test."),
+        getStructuredState: vi.fn().mockResolvedValue({
+          currentExecutionPhase: "testing",
+          filesChanged: ["src/billing/service.ts"],
+          installStatus: "succeeded",
+          testStatus: "failed",
+          buildStatus: "unknown",
+          currentBlocker: "billing suite failing",
+          nextSuggestedStep: "fix the failing assertion",
+        }),
+      } as never,
+      worker: worker as never,
+      runtime: {
+        reconcileProjectRuntime: vi.fn().mockResolvedValue({
+          status: "running",
+          containerId: "ctr-billing",
+          containerName: "teleclaw-billing",
+          runtimeFamily: "node",
+          workspacePath: `${process.cwd()}/workspace/billing`,
+          checkedAt: new Date().toISOString(),
+        }),
+        ensureProjectRuntime: vi.fn().mockResolvedValue({
+          outcome: "runtime_reused",
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+        validateProjectRuntime: vi.fn().mockResolvedValue({
+          ok: true,
+          status: {
+            status: "running",
+            containerId: "ctr-billing",
+            containerName: "teleclaw-billing",
+            runtimeFamily: "node",
+            workspacePath: `${process.cwd()}/workspace/billing`,
+            checkedAt: new Date().toISOString(),
+          },
+        }),
+      } as never,
+    });
+
+    const response = await router.processInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat-1",
+      body: "what changed?",
+      timestampMs: Date.now(),
+    });
+
+    expect(response.text).toContain("Changed files: src/billing/service.ts");
+    expect(response.text).toContain("Test status: failed");
+    expect(worker.summarize).not.toHaveBeenCalled();
+    expect(worker.getStatus).not.toHaveBeenCalled();
   });
 
   it("approves pending action and safely resumes execution", async () => {
