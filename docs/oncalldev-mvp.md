@@ -52,10 +52,15 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 ## Local operator workflow
 
 - Primary runbook: [OnCallDev local setup](/oncalldev-local-setup).
-- Use scoped checks during daily iteration:
+- Daily readiness checklist: [OnCallDev readiness checklist](/oncalldev-readiness-checklist).
+- Fast operator smoke path: [OnCallDev smoke test](/oncalldev-smoke-test).
+- TeleClaw-scoped commands for daily use:
+  - `pnpm teleclaw:doctor`
+  - `pnpm teleclaw:start`
   - `pnpm teleclaw:test`
   - `pnpm teleclaw:voice:test`
-- Voice artifacts in `TTS_OUTPUT_DIR` now have automatic retention cleanup (TTL + max-file policy) to prevent unbounded growth.
+  - `pnpm teleclaw:smoke`
+- Voice artifacts in `TTS_OUTPUT_DIR` have automatic retention cleanup (TTL + max-file policy) to prevent unbounded growth.
 
 ## Known MVP TODOs
 
