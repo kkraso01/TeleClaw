@@ -322,6 +322,49 @@ describe("TeleClaw end-to-end journey scenarios", () => {
     expect(response.outcome.type).toBe("success");
   });
 
+  it("returns clarification for weak transcripts instead of executing", async () => {
+    const router = createScenarioRouter({
+      voice: {
+        transcribeAudio: vi.fn().mockResolvedValue({
+          text: "maybe",
+          provider: "faster-whisper",
+          metadata: { quality: "low", confidence: 0.1 },
+        }),
+      },
+    });
+    const response = await router.processVoiceInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat",
+      audioUrl: "https://voice.test/weak.ogg",
+      timestampMs: Date.now(),
+    });
+    expect(response.outcome.type).toBe("needs_clarification");
+    expect(response.text).toContain("could not understand");
+  });
+
+  it("returns explicit fallback-to-text guidance when STT provider fails", async () => {
+    const router = createScenarioRouter({
+      voice: {
+        transcribeAudio: vi.fn().mockResolvedValue({
+          text: "",
+          provider: "faster-whisper",
+          metadata: { quality: "missing", reason: "stt_provider_failure" },
+        }),
+      },
+    });
+    const response = await router.processVoiceInbound({
+      channel: "telegram",
+      userId: "u1",
+      chatId: "chat",
+      audioUrl: "https://voice.test/failed.ogg",
+      timestampMs: Date.now(),
+    });
+    expect(response.outcome.type).toBe("needs_clarification");
+    expect(response.text).toContain("temporarily unavailable");
+    expect(response.text).toContain("send the request as text");
+  });
+
   it("falls back to text when voice reply generation fails", async () => {
     const router = createScenarioRouter({
       voice: {

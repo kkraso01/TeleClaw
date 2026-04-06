@@ -337,6 +337,7 @@ export type OnCallMemoryEvent =
       type: "inbound_voice_transcript";
       text: string;
       provider: string;
+      metadata?: Record<string, unknown>;
     }
   | {
       id: string;
