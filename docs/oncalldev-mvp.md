@@ -37,6 +37,8 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
 - `PROJECTS_ROOT` sets the default allowed workspace root.
 - `ALLOWED_PROJECT_MOUNTS` adds extra comma-separated allowed roots.
 - `OPENHANDS_ENDPOINT` targets the OpenHands worker service.
+- `OPENHANDS_VENDOR_PATH` sets vendored OpenHands root (`/app/vendor/openhands` in container images).
+- `OPENHANDS_PYTHON_BIN` sets the interpreter used for `vendor_local` mode.
 - `ONCALLDEV_OPENHANDS_API_KEY` optional bearer token.
 - `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` are forwarded to worker runtime payloads.
 - `DEFAULT_REPLY_MODE` can be used by project defaults and reply formatting policy.
@@ -60,6 +62,8 @@ The MVP keeps OpenClaw's gateway, Telegram integration, and normalization pipeli
   - `pnpm teleclaw:test`
   - `pnpm teleclaw:voice:test`
   - `pnpm teleclaw:smoke`
+  - `pnpm teleclaw:docker:build`
+  - `pnpm teleclaw:docker:up`
 - Voice artifacts in `TTS_OUTPUT_DIR` have automatic retention cleanup (TTL + max-file policy) to prevent unbounded growth.
 
 ## Known MVP TODOs

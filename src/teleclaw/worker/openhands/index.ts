@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { toOpenHandsInstruction } from "./mapper.js";
 import type {
@@ -240,6 +241,17 @@ async function runVendoredLocal(
   cfg: OpenHandsBridgeConfig,
   request: OpenHandsBridgeRequest,
 ): Promise<OpenHandsBridgeResponse> {
+  const pyprojectPath = path.join(cfg.vendorPath, "pyproject.toml");
+  if (!existsSync(cfg.vendorPath) || !existsSync(pyprojectPath)) {
+    return {
+      status: "error",
+      text: `OpenHands vendored path is missing or invalid at ${cfg.vendorPath}. Expected ${pyprojectPath}.`,
+      meta: { mode: "vendor_local", errorCode: "missing_vendor_path" },
+      nextSuggestedStep:
+        "Mount or copy vendor/openhands into the runtime image and set OPENHANDS_VENDOR_PATH.",
+    };
+  }
+
   const instruction = toOpenHandsInstruction(request.action, request.instruction, request.context);
   const sessionName =
     request.context?.workerSessionId ??
@@ -282,9 +294,13 @@ async function runVendoredLocal(
     child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
     child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
     child.on("error", (error) => {
+      const executableHint =
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? ` Verify OPENHANDS_PYTHON_BIN (${cfg.pythonBin}) is installed in the container.`
+          : "";
       resolve({
         status: "error",
-        text: `OpenHands vendored execution failed to start: ${error.message}`,
+        text: `OpenHands vendored execution failed to start: ${error.message}.${executableHint}`.trim(),
       });
     });
     child.on("close", (code) => {

@@ -4,6 +4,15 @@ services:
     environment:
       HOME: /home/node
       TERM: xterm-256color
+      ONCALLDEV_ENABLED: ${ONCALLDEV_ENABLED:-1}
+      OPENHANDS_ENABLED: ${OPENHANDS_ENABLED:-1}
+      OPENHANDS_MODE: ${OPENHANDS_MODE:-vendor_local}
+      OPENHANDS_VENDOR_PATH: ${OPENHANDS_VENDOR_PATH:-/app/vendor/openhands}
+      OPENHANDS_PYTHON_BIN: ${OPENHANDS_PYTHON_BIN:-python3}
+      PROJECTS_ROOT: ${PROJECTS_ROOT:-/workspace}
+      TELECLAW_DATA_DIR: ${TELECLAW_DATA_DIR:-/home/node/.openclaw/teleclaw}
+      STT_WHISPERCPP_BIN: ${STT_WHISPERCPP_BIN:-whisper-cli}
+      TTS_PIPER_BIN: ${TTS_PIPER_BIN:-piper}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
@@ -13,6 +22,8 @@ services:
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+      - ${TELECLAW_PROJECTS_ROOT:-./workspace}:/workspace
+      - ${TELECLAW_MODELS_DIR:-./models}:/models:ro
       ## Uncomment the lines below to enable sandbox isolation
       ## (agents.defaults.sandbox). Requires Docker CLI in the image
       ## (build with --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1) or use

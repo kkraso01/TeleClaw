@@ -25,6 +25,19 @@ Expected:
 - gateway starts successfully
 - Telegram channel probe is healthy
 
+### Container variant
+
+```bash
+pnpm teleclaw:docker:build
+pnpm teleclaw:docker:up
+docker compose exec openclaw-gateway node --import tsx scripts/teleclaw-doctor.ts
+```
+
+Expected:
+
+- doctor confirms vendored OpenHands path and Python availability
+- OpenHands mode stays `vendor_local` unless intentionally changed
+
 ## 2) TeleClaw regression smoke
 
 ```bash

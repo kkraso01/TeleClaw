@@ -49,6 +49,12 @@ function envChecks(): CheckResult[] {
     { key: "OPENHANDS_ENABLED", required: false, recommendation: "defaults to 1" },
     { key: "OPENHANDS_MODE", required: false, recommendation: "vendor_local" },
     { key: "OPENHANDS_ENDPOINT", required: false, recommendation: "http://localhost:3001" },
+    {
+      key: "OPENHANDS_VENDOR_PATH",
+      required: false,
+      recommendation: "vendor/openhands or /app/vendor/openhands",
+    },
+    { key: "OPENHANDS_PYTHON_BIN", required: false, recommendation: "python3" },
     { key: "TELECLAW_DATA_DIR", required: false, recommendation: "~/.openclaw/teleclaw" },
     { key: "PROJECTS_ROOT", required: false, recommendation: "/workspace" },
     { key: "CONTAINER_RUNTIME", required: false, recommendation: "local or docker" },
@@ -93,6 +99,10 @@ async function dependencyChecks(): Promise<CheckResult[]> {
 
   const whisperBin = readEnvValue("STT_WHISPERCPP_BIN") ?? "whisper-cli";
   const piperBin = readEnvValue("TTS_PIPER_BIN") ?? "piper";
+  const openHandsPythonBin = readEnvValue("OPENHANDS_PYTHON_BIN") ?? "python3";
+  const openHandsVendorPath =
+    readEnvValue("OPENHANDS_VENDOR_PATH") ?? path.resolve("vendor/openhands");
+  const openHandsMode = readEnvValue("OPENHANDS_MODE") ?? "vendor_local";
   const whisperModel = readEnvValue("STT_WHISPERCPP_MODEL");
   const piperModel = readEnvValue("TTS_PIPER_MODEL");
   const runtime = readEnvValue("CONTAINER_RUNTIME") ?? "local";
@@ -121,6 +131,19 @@ async function dependencyChecks(): Promise<CheckResult[]> {
         ? "available on PATH"
         : "not found on PATH (TTS falls back to text-safe behavior)",
     },
+    {
+      level: checkCommandOnPath(openHandsPythonBin)
+        ? "pass"
+        : openHandsMode === "vendor_local"
+          ? "fail"
+          : "warn",
+      label: `binary:${openHandsPythonBin}`,
+      detail: checkCommandOnPath(openHandsPythonBin)
+        ? "available on PATH"
+        : openHandsMode === "vendor_local"
+          ? "missing from PATH while OPENHANDS_MODE=vendor_local"
+          : "missing from PATH (required only for OPENHANDS_MODE=vendor_local)",
+    },
   ];
 
   checks.push({
@@ -133,6 +156,22 @@ async function dependencyChecks(): Promise<CheckResult[]> {
     level: (await exists(voiceDir)) ? "pass" : "warn",
     label: "path:tts-output-dir",
     detail: `${voiceDir}${(await exists(voiceDir)) ? " exists" : " missing (created by first synthesis)"}`,
+  });
+
+  checks.push({
+    level:
+      openHandsMode === "vendor_local"
+        ? (await exists(path.join(openHandsVendorPath, "pyproject.toml")))
+          ? "pass"
+          : "fail"
+        : "warn",
+    label: "path:openhands-vendor",
+    detail:
+      openHandsMode === "vendor_local"
+        ? (await exists(path.join(openHandsVendorPath, "pyproject.toml")))
+          ? `${openHandsVendorPath} looks valid`
+          : `${openHandsVendorPath} missing pyproject.toml (vendored OpenHands not available)`
+        : `${openHandsVendorPath} (unused when OPENHANDS_MODE=${openHandsMode})`,
   });
 
   checks.push({

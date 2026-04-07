@@ -2,6 +2,8 @@
 
 This checklist is the operational baseline for daily TeleClaw use on a local machine.
 
+Container note: this now also applies to `docker compose` runs when using the TeleClaw image path.
+
 ## Readiness gaps this milestone closed
 
 - Added a single local readiness command (`pnpm teleclaw:doctor`) to validate env, binaries, and model paths.
@@ -19,7 +21,8 @@ A local TeleClaw environment is considered ready when all items below are true.
 3. Telegram bot is reachable and can exchange text with TeleClaw.
 4. Runtime mode (local or docker) matches your machine setup.
 5. OpenHands bridge mode is intentional (`vendor_local` by default).
-6. Voice configuration is intentional:
+6. If running in container mode, `OPENHANDS_VENDOR_PATH=/app/vendor/openhands` and Python is available.
+7. Voice configuration is intentional:
    - either whisper.cpp + Piper are fully configured
    - or fallback-only mode is expected (`ENABLE_VOICE_REPLIES=0`)
 
@@ -34,6 +37,15 @@ A local TeleClaw environment is considered ready when all items below are true.
    - `pnpm openclaw channels status --probe`
 5. Run TeleClaw smoke tests:
    - `pnpm teleclaw:smoke`
+
+## Startup order for container daily use
+
+1. Build image:
+   - `pnpm teleclaw:docker:build`
+2. Start compose service:
+   - `pnpm teleclaw:docker:up`
+3. Validate from inside container:
+   - `docker compose exec openclaw-gateway node --import tsx scripts/teleclaw-doctor.ts`
 
 ## TeleClaw-authoritative commands
 
