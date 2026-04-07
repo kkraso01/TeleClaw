@@ -99,6 +99,7 @@ TeleClaw stays first-class for text under all failure modes.
 ## Limitations after this milestone
 
 - `whisper.cpp` and Piper binaries/models must be installed locally and configured.
+- In Docker deployments, voice binaries/models are expected via custom image layers or mounted paths (for example `/models`).
 - Whisper confidence remains an inferred heuristic from provider output signals.
 - Voice output retention is now automatic and configurable (`TTS_OUTPUT_TTL_SECONDS`, `TTS_OUTPUT_MAX_FILES`).
 - OpenAI TTS is still available as a non-default compatibility option.

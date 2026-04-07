@@ -16,6 +16,13 @@
 
 Yes. Config default remains `OPENHANDS_MODE=vendor_local` when `OPENHANDS_ENABLED` is true.
 
+### Container packaging contract
+
+- TeleClaw image now copies vendored OpenHands into `/app/vendor/openhands`.
+- Bridge config resolves this as container-safe fallback when `OPENHANDS_VENDOR_PATH` is not explicitly set.
+- Bridge performs a startup check for `<vendor-path>/pyproject.toml` and reports a clear fix when missing.
+- Runtime image includes Python and installs vendored OpenHands in-container for `vendor_local` execution.
+
 ### Ingestion gaps audited before this milestone
 
 - Worker output capture existed (`text`, optional `summary`, sparse `progressEvents`) but lacked a TeleClaw-owned normalized execution state lifecycle.

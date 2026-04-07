@@ -14,4 +14,11 @@ describe("resolveOpenHandsBridgeConfig", () => {
     const config = resolveOpenHandsBridgeConfig({ OPENHANDS_ENABLED: "0" } as NodeJS.ProcessEnv);
     expect(config.mode).toBe("disabled");
   });
+
+  it("prefers explicit vendored path overrides", () => {
+    const config = resolveOpenHandsBridgeConfig({
+      OPENHANDS_VENDOR_PATH: "/tmp/openhands",
+    } as NodeJS.ProcessEnv);
+    expect(config.vendorPath).toBe("/tmp/openhands");
+  });
 });

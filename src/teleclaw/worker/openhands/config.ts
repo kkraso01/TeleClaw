@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { OpenHandsBridgeConfig, OpenHandsIntegrationMode } from "./types.js";
 
@@ -18,6 +19,15 @@ function resolveMode(value: string | undefined): OpenHandsIntegrationMode {
 export function resolveOpenHandsBridgeConfig(env = process.env): OpenHandsBridgeConfig {
   const enabled = parseBoolean(env.OPENHANDS_ENABLED, true);
   const mode = enabled ? resolveMode(env.OPENHANDS_MODE) : "disabled";
+  const explicitVendorPath = env.OPENHANDS_VENDOR_PATH;
+  const defaultVendorPath = path.resolve("vendor/openhands");
+  const containerVendorPath = "/app/vendor/openhands";
+  const vendorPath = explicitVendorPath
+    ? path.resolve(explicitVendorPath)
+    : existsSync(defaultVendorPath)
+      ? defaultVendorPath
+      : containerVendorPath;
+
   return {
     enabled,
     mode,
@@ -27,7 +37,7 @@ export function resolveOpenHandsBridgeConfig(env = process.env): OpenHandsBridge
     llmBaseUrl: env.LLM_BASE_URL,
     llmApiKey: env.LLM_API_KEY,
     model: env.LLM_MODEL,
-    vendorPath: path.resolve(env.OPENHANDS_VENDOR_PATH ?? "vendor/openhands"),
+    vendorPath,
     pythonBin: env.OPENHANDS_PYTHON_BIN ?? "python3",
     logLevel: env.OPENHANDS_LOG_LEVEL,
   };

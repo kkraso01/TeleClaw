@@ -86,6 +86,24 @@ Use this startup order every time:
 
 `teleclaw:start` runs OpenClaw gateway dev mode with `ONCALLDEV_ENABLED=1` to keep startup explicit for TeleClaw operation.
 
+## 4b) Container startup sequence
+
+For Dockerized TeleClaw with vendored OpenHands:
+
+```bash
+pnpm teleclaw:docker:build
+pnpm teleclaw:docker:up
+docker compose exec openclaw-gateway node --import tsx scripts/teleclaw-doctor.ts
+pnpm teleclaw:docker:logs
+```
+
+Container assumptions:
+
+- vendored OpenHands is baked into `/app/vendor/openhands`
+- `OPENHANDS_VENDOR_PATH` should be `/app/vendor/openhands`
+- Python runs via `OPENHANDS_PYTHON_BIN=python3`
+- whisper.cpp and Piper binaries are not included by default; use mounted binaries/models or custom image layers
+
 ## 5) Daily verification flow
 
 ### Core TeleClaw checks
